@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsh-plugin-npm-manager 修复报告 — 0.3.0</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#fff; --ink:#1c1f23; --ink2:#4a5158; --ink3:#7b848c;
+    --line:#e3e6ea; --red:#c0392b; --redbg:#fdf1ef; --redline:#f2cfc9;
+    --amber:#9a6400; --amberbg:#fdf7e8; --amberline:#f0e0b8;
+    --green:#1e7a4c; --greenbg:#eef8f2; --greenline:#c6e6d5;
+    --blue:#1f5fa8; --bluebg:#eff5fc; --blueline:#cbdff5;
+    --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.72 -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;}
+  .wrap{max-width:1020px;margin:0 auto;padding:40px 28px 72px}
+  header{border-bottom:2px solid var(--ink);padding-bottom:20px;margin-bottom:32px}
+  h1{font-size:26px;line-height:1.35;margin:0 0 10px;letter-spacing:-.01em}
+  .sub{color:var(--ink3);font-size:13.5px;font-family:var(--mono)}
+  h2{font-size:19px;margin:44px 0 16px;padding-bottom:8px;border-bottom:1px solid var(--line);letter-spacing:-.01em}
+  h3{font-size:16px;margin:28px 0 10px}
+  h4{font-size:14.5px;margin:20px 0 8px;color:var(--ink2)}
+  p{margin:10px 0}
+  code{font-family:var(--mono);font-size:13px;background:#eceff2;padding:1.5px 5px;border-radius:3px;color:#2a3038}
+  pre{background:#1f2429;color:#e6e9ec;padding:14px 16px;border-radius:6px;overflow-x:auto;
+    font-family:var(--mono);font-size:12.5px;line-height:1.62;margin:12px 0}
+  pre code{background:none;padding:0;color:inherit;font-size:inherit}
+  .kw{color:#f08a8a}.str{color:#a5d6a7}.cm{color:#7d878f;font-style:italic}.ok{color:#7fd1a6}.bad{color:#ff9d92}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:18px 20px;margin:16px 0}
+  .card.ok{border-left:4px solid var(--green);background:var(--greenbg);border-color:var(--greenline)}
+  .card.bad{border-left:4px solid var(--red);background:var(--redbg);border-color:var(--redline)}
+  .card.warn{border-left:4px solid var(--amber);background:var(--amberbg);border-color:var(--amberline)}
+  .card.info{border-left:4px solid var(--blue);background:var(--bluebg);border-color:var(--blueline)}
+  .tag{display:inline-block;font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.06em;
+    padding:2px 7px;border-radius:3px;vertical-align:2px;margin-right:8px}
+  .tag.ok{background:var(--green);color:#fff}
+  .tag.bad{background:var(--red);color:#fff}
+  .tag.warn{background:var(--amber);color:#fff}
+  .tag.info{background:var(--blue);color:#fff}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px;background:var(--panel)}
+  th,td{border:1px solid var(--line);padding:9px 11px;text-align:left;vertical-align:top}
+  th{background:#f0f2f5;font-weight:600;font-size:13px;color:var(--ink2)}
+  ul,ol{margin:10px 0;padding-left:22px} li{margin:5px 0}
+  .lead{font-size:16px;background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--green);
+    border-radius:8px;padding:16px 20px;margin:0 0 8px}
+  img.shot{width:100%;border:1px solid var(--line);border-radius:8px;display:block;margin:14px 0}
+  .cap{font-size:12.5px;color:var(--ink3);text-align:center;margin:-6px 0 20px}
+  .chain{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0}
+  .step{flex:1 1 210px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px;font-size:13px}
+  .step b{display:block;font-family:var(--mono);font-size:11px;color:var(--ink3);letter-spacing:.05em;margin-bottom:5px}
+  .foot{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);color:var(--ink3);font-size:12.5px;font-family:var(--mono)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>dsh-plugin-npm-manager 修复报告<br>设置页从"什么都不显示"到端到端跑通</h1>
+  <div class="sub">2026-09-19 · 0.2.0 → 0.3.0 · dsh 0.1.5-rc.2 · profile = web · 全部结论均来自本机实测</div>
+</header>
+
+<div class="lead">
+  <b>修好了，并且是真实环境端到端验证的 —— 不是沙箱自测。</b><br>
+  <code>Settings → 插件 → 插件配置</code> 里现在能看到「NPM 管理器」卡片，
+  渲染出 9 行真实包数据（4 个可升级），范围切换与刷新按钮可用，<b>零页面错误、零失败请求</b>。
+  <br><br>
+  根因是<b>三层阻断串联</b>，任何一层不修都看不到面板。原来的 31 个测试全绿，
+  但一条都没覆盖到这三层 —— 这也是本轮把测试从"字符串包含"改成"真调组件 + 真跑浏览器"的原因。
+</div>
+
+<h2>1. 三层阻断（全部已修）</h2>
+
+<div class="chain">
+  <div class="step"><b>第 1 层 · 挂载</b>插件从未进入 cordis 配置树<br><code>patch: entry "npm-manager" not found</code></div>
+  <div class="step"><b>第 2 层 · 渲染</b>注册的不是 React 组件<br><i>Objects are not valid as a React child</i></div>
+  <div class="step"><b>第 3 层 · 注册</b>bundle id 与包名不一致<br><i>loaded without registering</i></div>
+</div>
+
+<div class="card bad">
+  <span class="tag bad">第 1 层</span><b>插件从未被挂载 —— 它连报错的机会都没有</b>
+  <p>修复前：</p>
+  <pre><code>$ dsh --profile web --dump-config
+dsh: [.../profiles/web/cordis.patch.yml] <span class="bad">patch: entry "npm-manager" not found</span>
+
+$ grep -c 'npm-manager' dump.yml   <span class="bad">→ 0</span>     <span class="cm"># 合成树里根本没有它</span></code></pre>
+  <p>三处配置同时错，缺一不可：</p>
+  <ol>
+    <li>插件自带的 <code>cordis.patch.yml</code> 用了顶层 <code>- id:</code>。
+      <code>applyEntryPatches()</code> 对非 insert 补丁要求 id <b>命中已存在条目</b>，未命中就 warn + 丢弃，
+      <b>不创建条目</b>。而且 <code>name</code> 填了 <code>link:./src/index.ts</code> ——
+      把 pnpm 的依赖协议写进了 cordis 的包名字段。</li>
+    <li>profile 的 <code>dsh.profile.bundles</code> 没有登记本包 →
+      本插件的 <code>cordis.patch.yml</code> <b>根本不会被 apply</b>（bundle 列表才是入口）。</li>
+    <li>profile 自己的 <code>cordis.patch.yml</code> 里那段 <code>- id: npm-manager</code>
+      因 id 不存在被静默丢弃。</li>
+  </ol>
+  <p><b>修法</b>：插件 patch 改 <code>- insert:</code>；包名加进 <code>dsh.profile.bundles</code>；
+  profile 那段保留为"用户层覆盖"（bundle 层先插入，本层后应用，id 此时已存在）。</p>
+  <p><b>验证</b>：warn 消失，合成树里出现 <code>- id: npm-manager / name: dsh-plugin-npm-manager</code>。</p>
+</div>
+
+<div class="card bad">
+  <span class="tag bad">第 2 层</span><b>注册的"组件"不是 React 组件</b>
+  <p>渲染器（<code>dsh-client-ui-renderer/lib/client.js:652</code>）直接：</p>
+  <pre><code><span class="kw">function</span> renderEntry(slotKey, Comp, kit, ...) {
+  <span class="kw">return</span> jsx(<span class="bad">Comp</span>, { ...kit, ...injected, ...slotInjected.props, ...ownerProps });
+}                       <span class="cm">// Comp = entry.component，必须是 React 组件</span></code></pre>
+  <p>旧代码注册的是一个<b>返回普通对象</b>的函数：</p>
+  <pre><code>scoped.slots.register(def, <span class="kw">function</span> () {
+  <span class="kw">return</span> { render: <span class="kw">function</span> (props) { ... } }   <span class="bad">// React 收到一个对象 → 抛错</span>
+})</code></pre>
+  <p>而且组件里读 <code>props.target</code> / <code>props.dom.firstChild</code> ——
+  slot kit 提供的是 <code>t</code> / <code>renderSlot</code> / store 等座位，<b>没有任何 DOM 注入入口</b>，
+  所以 <code>target</code> 恒为 undefined。</p>
+  <p><b>修法</b>：重写为真 React 组件，用 <code>React.createElement</code> 构建 UI，
+  数据走 <code>fetch('/plugins/npm-manager/...')</code>。</p>
+</div>
+
+<div class="card bad">
+  <span class="tag bad">第 3 层</span><b>bundle 的 <code>id</code> 与包名不一致 —— 这是最隐蔽的一层</b>
+  <p><code>dsh-client-modules/lib/client.js:248</code>：</p>
+  <pre><code><span class="kw">if</span> (!<span class="kw">this</span>.factories.has(id))
+  <span class="kw">throw new</span> Error(<span class="str">`client-modules: bundle ${url} loaded without registering "${id}" via __ModuleLoader__.load`</span>);</code></pre>
+  <p>这里的 <code>id</code> 是图行 id，即 <b>包名</b>。<code>package.json#name</code> 是
+  <code>dsh-plugin-npm-manager</code>，而旧产物里写的是 <code>id: 'npm-manager'</code> → 必然抛错。</p>
+  <p>这一层是<b>在真实浏览器里才暴露的</b>：服务端 <code>--dump-config</code> 全绿、路由全通，
+  但前端一加载就炸。旁边的社区插件 <code>@changfenhuang/dsh-annotation</code> 源码里正好留了一条注释点明这个坑。</p>
+  <p><b>修法</b>：构建脚本从 <code>package.json#name</code> 读 id，不写常量；
+  并在构建与测试里各加一条断言，杜绝改名后漂移。</p>
+</div>
+
+<div class="card warn">
+  <span class="tag warn">附带</span><b>两处契约偏差</b>
+  <ul>
+    <li><b><code>locale</code> 传了字典对象</b>。渲染器把 <code>entry.locale</code> 当<b>命名空间字符串</b>用
+      （<code>localeSeat(face, entry.locale)</code> → <code>face.bind(ns)</code> → <code>dicts.get(ns)</code>），
+      传对象不报错，但查不到字典 → <code>t('title')</code> 原样返回 <code>'title'</code>，界面显示裸 key。
+      改为 <code>locale: NS</code>（字符串）+ <code>ctx.locale.register(NS, {zh, en})</code> 注册字典。</li>
+    <li><b><code>dsh.client.inject</code> 缺 <code>@deepseek-ai/dsh-client-ui-settings</code></b>
+      —— 那是 <code>settingsScope</code> 的提供方（<code>super(ctx, "settingsScope")</code>）。
+      对照 dshmarket 声明了 locale + ui-settings + ui-theme。</li>
+  </ul>
+</div>
+
+<h2>2. 验证证据</h2>
+
+<h3>2.1 静态：插件确实入树</h3>
+<pre><code>$ dsh --profile web --dump-config > /tmp/d3.yml 2>/tmp/w3.txt
+$ cat /tmp/w3.txt
+dsh: [@michengai/dsh-archive-manager] patch: entry "ui-settings-unarchive-sessions" not found
+<span class="ok">（npm-manager 那条 warn 已消失）</span>
+
+$ grep -c 'npm-manager' /tmp/d3.yml
+<span class="ok">3</span>
+
+613- - id: runtime-inventory
+614-   name: dsh-mcp-skill-panel
+615: <span class="ok"># == dsh-plugin-npm-manager</span>          <span class="cm">← 来自 bundle 层</span>
+616: <span class="ok">- id: npm-manager</span>
+617: <span class="ok">  name: dsh-plugin-npm-manager</span>
+618-   config: { scope: both, registryCacheTtlMs: 300000, ... }</code></pre>
+
+<h3>2.2 服务端：路由真的活着</h3>
+<pre><code>$ curl "http://127.0.0.1:3099/plugins/npm-manager/packages?scope=local"
+<span class="ok">HTTP 200</span>  {"packages":[
+  {"name":"semver","latestVersion":"7.8.5","currentVersion":"^7.6.0",
+   "isOutdated":true,"updateType":"major", ...},
+  {"name":"node-fetch","latestVersion":"3.3.2","currentVersion":"^2.7.0", ...},
+  {"name":"typescript","latestVersion":"7.0.2","currentVersion":"^5.4.0", ...} ]}
+
+$ curl "http://127.0.0.1:3099/plugins/npm-manager/settings"
+<span class="ok">HTTP 200</span>  {"current":{"scope":"both",...},"namespace":"npm-manager"}</code></pre>
+
+<h3>2.3 客户端：bundle 进入 boot manifest</h3>
+<pre><code>$ curl -sL -b cj.txt "http://127.0.0.1:3099/?token=***" | grep npm-manager
+<span class="ok">"id":"dsh-plugin-npm-manager"</span>
+<span class="ok">/plugins/??dsh-plugin-npm-manager/client.js&rev=b396979f11ec3438-60</span>
+/plugins/??...,<span class="ok">dsh-plugin-npm-manager/client.js</span>,dsh-better-sidebar/client.js,...</code></pre>
+
+<h3>2.4 真实浏览器：面板渲染成功</h3>
+<p>Edge headless 走完整流程：登录 → 打开设置 → 进入「插件」→ 等数据 → 交互。</p>
+
+<img class="shot" src="验证截图_插件面板_20260919.png" alt="Settings → 插件 → 插件配置 里的 NPM 管理器卡片">
+<div class="cap">实际截图：卡片标题「NPM 管理器」、副标题「查看本机已安装的 npm 包」、
+范围分段控件、刷新按钮、统计「共 9 个包 · 4 个可升级」、表格 9 行</div>
+
+<pre><code>### 步骤 4：最终探针
+{
+ "hasCardElement": <span class="ok">true</span>,
+ "cardText": "NPM 管理器\n查看本机已安装的 npm 包\n本项目\n全局\n全部\n刷新缓存\n
+              共 9 个包 · 4 个可升级\n包名\t当前版本\t最新版本\t说明\n
+              semver主版本\t^7.6.0\t7.8.5\tThe semantic version parser used by npm.\n
+              node-fetch主版本\t^2.7.0\t3.3.2\t...\n
+              typescript主版本\t^5.4.0\t7.0.2\t...",
+ "buttonsInCard": ["本项目","全局","全部","刷新缓存"],
+ "tableRows": <span class="ok">9</span>
+}
+
+### 步骤 5：交互测试
+  点击「全局」= true → {"rows":0,"text":"...没有找到已安装的包。"}   <span class="cm">← 见 §4.1</span>
+  点击「刷新缓存」= true → 正常
+
+### 页面错误
+  （无）
+### 失败请求
+  （无）
+### 控制台消息
+  [warn] [git-graph] auto-isolation disabled: ...   <span class="cm">← 与本插件无关</span></code></pre>
+
+<p><b>中文文案正常显示</b>这一点本身就是证据：它证明 <code>locale: NS</code> 字符串 + 字典注册这条路走通了
+（若仍传对象，这里会显示 <code>title</code>、<code>refresh</code> 这样的裸 key）。</p>
+
+<h2>3. 改动清单</h2>
+
+<table>
+  <tr><th style="width:34%">文件</th><th>改动</th></tr>
+  <tr><td><code>cordis.patch.yml</code>（插件）</td><td>顶层 <code>- id:</code> → <code>- insert:</code>；<code>name</code> 由 <code>link:./src/index.ts</code> 改为包名；补注释说明 patch 语义</td></tr>
+  <tr><td><code>~/.dsh/profiles/web/package.json</code></td><td><code>dsh.profile.bundles</code> 加入 <code>dsh-plugin-npm-manager</code></td></tr>
+  <tr><td><code>~/.dsh/profiles/web/cordis.patch.yml</code></td><td>保留 <code>- id: npm-manager</code> 作为用户层覆盖，补注释说明它依赖 bundles 登记</td></tr>
+  <tr><td><code>client/src/index.js</code></td><td><b>新增</b>：真 React 卡片（范围切换 / 刷新 / 过期徽章 / 三态 / 中英字典）</td></tr>
+  <tr><td><code>client/client.js</code></td><td>占位实现 → 构建产物（13.9 KB）</td></tr>
+  <tr><td><code>scripts/build-client.mjs</code></td><td>三行占位 → 真构建链：源码校验 6 项 + 套壳 + 产物复校 5 项；id 从 <code>package.json#name</code> 读取</td></tr>
+  <tr><td><code>tests/client-verify.mjs</code></td><td>4 → 12 断言；新增"真调组件断言返回 React 元素""id == 包名""key/locale 是字符串"</td></tr>
+  <tr><td><code>package.json</code></td><td>版本 0.2.0 → 0.3.0；补 <code>build:client</code>；<code>dsh.client.inject</code> 补 ui-settings</td></tr>
+  <tr><td><code>DEPLOY.md</code></td><td>新增 §3.5「把包名加进 dsh.profile.bundles」；修正 §6.3 的错误说法</td></tr>
+  <tr><td><code>CHANGELOG.md</code> / <code>PROJECT_STATUS.md</code></td><td>补 0.3.0 条目与最新状态</td></tr>
+  <tr><td><code>_diag/browser-check.mjs</code></td><td><b>新增</b>：puppeteer + Edge 端到端验证脚本</td></tr>
+</table>
+
+<p><b>部署同步</b>：上述产物已同步到 <code>~/.dsh/profiles/web/vendor/dsh-plugin-npm-manager/</code>
+（<code>node_modules/</code> 里是软链指向 vendor，不同步等于没改）。</p>
+
+<h2>4. 剩余问题（已定位，本轮未修）</h2>
+
+<p>按你指定的范围，本轮只做了"挂载 + 客户端渲染"。以下问题都已实测定位：</p>
+
+<div class="card warn">
+  <span class="tag warn">4.1</span><b>全局扫描有两个真缺陷</b>
+  <p>交互测试里点「全局」显示 0 个包。我没有直接当成 bug —— 先做了对照实验：</p>
+  <pre><code><span class="cm"># A. 当前环境（本沙箱 shell 里 APPDATA 不存在）</span>
+scanGlobalPackages() = <span class="bad">[]</span>
+
+<span class="cm"># B. 补上 APPDATA 后</span>
+APPDATA="C:\Users\Admin\AppData\Roaming" node -e "..."
+scanGlobalPackages() = <span class="ok">[{"name":"opencode-ai","currentVersion":"1.18.30"},
+                       {"name":"pnpm","currentVersion":"11.22.0"}]</span></code></pre>
+  <p>所以"0 个包"<b>在我的启动环境下是假象</b>（本沙箱 shell 只有 <code>LOCALAPPDATA</code>/<code>USERPROFILE</code>/<code>TEMP</code>，
+  没有 <code>APPDATA</code>）—— 你正常启动 dsh 时应该能看到 2 个。但暴露了两个<b>真缺陷</b>：</p>
+  <ol>
+    <li><b>无兜底</b>：只认 <code>process.env.APPDATA</code>，没有 <code>USERPROFILE</code> / <code>os.homedir()</code> 回退。
+      任何环境下 APPDATA 缺失就静默返回空。</li>
+    <li><b>永久跳过 scoped 包</b>：<code>src/services/scanner.ts:69</code> 的
+      <code>if (item.startsWith('@')) continue</code>。本机 4 个全局项里
+      <code>@colbymchenry</code>、<code>@deepseek-ai</code> 两个<b>永远列不出来</b>，与环境无关。</li>
+  </ol>
+</div>
+
+<div class="card warn">
+  <span class="tag warn">4.2</span><b>路由 <code>:name</code> 是死路由</b>
+  <p><code>kind:'exact'</code> 的 path 不支持 <code>:param</code> —— exact 表是字面量 <code>Map</code> 查找
+  （<code>dsh-host-webserver/lib/index.js:322</code>）。该路径永远命中不了，请求落到 SPA fallback。
+  应改 <code>kind:'prefix'</code>（handler 里已有 regex 解析，可直接复用）。</p>
+  <p>⚠️ <code>tests/routes-verify.mjs</code> 用 fake webServer <b>只收集不匹配</b>，
+  结构上就不可能发现这个问题 —— 和客户端那层一样，是"测试全绿但功能是死的"。</p>
+</div>
+
+<div class="card warn">
+  <span class="tag warn">4.3</span><b><code>npm_apply_upgrade</code> 永久不可用</b>
+  <p>guard 读 <code>exec.agent?.approvals?.get?.(exec.callId)?.granted</code>，而官方
+  <code>ToolExecution</code> 类型是 <code>{callId, rootCallId, name, arguments, agent?, parent?, signal, token}</code>
+  —— <b>没有 <code>approvals</code></b>，<code>dsh-agent</code> 包里也搜不到。
+  <code>granted</code> 恒为 undefined → 工具 100% 被拦，且用户没有任何途径批准。
+  应改走 <code>ctx.on('tools/pre-execute')</code> + <code>ctx.userQuestions.ask()</code>。</p>
+</div>
+
+<div class="card info">
+  <span class="tag info">4.4</span><b>其余</b>
+  <ul>
+    <li>卡片目前只读展示，4 个配置字段还不能在界面上编辑（只能改 profile 的 patch）。</li>
+    <li><code>RegistryClient.getChangelog</code> 仍返回空数组（GitHub Releases 未接）。</li>
+    <li>vendor 快照仍带 <code>scripts</code> / <code>.archive/</code> 等冗余（不影响运行）。</li>
+  </ul>
+</div>
+
+<h2>5. 测试：31 → 50 断言</h2>
+
+<table>
+  <tr><th style="width:44%">套件</th><th style="width:14%">断言</th><th>说明</th></tr>
+  <tr><td><code>scripts/build-client.mjs</code></td><td>11</td><td>源码校验 + 产物复校（含 <b>id == 包名</b>）</td></tr>
+  <tr><td><code>tests/client-verify.mjs</code></td><td>12</td><td><b>真调组件</b>断言返回 React 元素；key/locale 是字符串</td></tr>
+  <tr><td><code>tests/tool-schema-verify.mjs</code></td><td>13</td><td>schema 四层（真宿主包）</td></tr>
+  <tr><td><code>tests/routes-verify.mjs</code></td><td>8</td><td>唯一键 + handler 行为 <span class="cm">（覆盖不到 4.2）</span></td></tr>
+  <tr><td><code>scripts/dev-conformance-check.mjs</code></td><td>6</td><td>服务层纯函数 + 形状</td></tr>
+  <tr><th>合计</th><th>50</th><th>全绿</th></tr>
+</table>
+
+<p><b>为什么旧测试全绿却漏掉三层阻断</b>：<code>client-verify.mjs</code> 旧版做的是
+<code>content.includes('return module.exports')</code> 这类字符串检查 —— 它验证"文件长得对"，
+不验证"渲染能不能成"；<code>routes-verify.mjs</code> 用 fake webServer 只 push 不匹配。
+本轮把边界换成真实对象：真调组件（断言 React 元素形状）、真跑 Edge 浏览器。
+断言数量不是重点，<b>边界真实性才是</b>。</p>
+
+<h2>6. 回滚方法</h2>
+
+<pre><code><span class="cm"># 全部改动的原始副本（含 profile 与 vendor 两侧）</span>
+C:\Users\Admin\.dsh\_backup-npm-manager-fix-20260919-195601\
+  ├─ profile\package.json          <span class="cm"># dsh.profile.bundles 原状</span>
+  ├─ profile\cordis.patch.yml
+  ├─ plugin\cordis.patch.yml
+  ├─ plugin\package.json
+  ├─ plugin\client.js
+  └─ vendor\package.json | cordis.patch.yml | client.js
+
+<span class="cm"># 回滚 = 把对应文件覆盖回去，然后重启 dsh web</span></code></pre>
+
+<p>若只想临时关掉插件：从 <code>dsh.profile.bundles</code> 里删掉
+<code>dsh-plugin-npm-manager</code> 一行并重启即可（profile 里那段 <code>- id:</code>
+会随之退化成无害的 warn）。</p>
+
+<h2>7. 一句话总结</h2>
+
+<div class="lead">
+  面板不显示，是<b>挂载层、渲染层、注册层三道门同时关着</b>。三道都修好之后，
+  真实浏览器里能看到完整的包管理卡片。
+  <br><br>
+  这一轮最值得留下的教训不是某一行代码，而是：<b>31 个断言全绿和"功能能用"之间没有必然关系</b> ——
+  字符串包含测不出渲染契约，fake 对象测不出真实匹配器，
+  唯一可靠的办法是把边界换成真组件、真浏览器、真 <code>--dump-config</code>。
+</div>
+
+<div class="foot">
+  证据文件：<code>_diag/run3.log</code> · <code>_diag/step4-card-final.png</code> ·
+  <code>_diag/browser-check.mjs</code> · <code>_diag/probe-insert.patch.yml</code><br>
+  关键源码：<code>dsh-app-boot/lib/index.js:59</code>（patch 语义）·
+  <code>dsh-client-modules/lib/client.js:248</code>（id 必须等于包名）·
+  <code>dsh-client-ui-renderer/lib/client.js:602,652</code>（locale 座位 / 组件渲染）·
+  <code>dsh-host-webserver/lib/index.js:322</code>（exact 表字面量查找）
+</div>
+
+</div>
+</body>
+</html>

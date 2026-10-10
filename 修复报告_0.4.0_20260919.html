@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsh-plugin-npm-manager 0.4.0 — 独立标签页 · 三范围 · 结果缓存</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#fff; --ink:#1c1f23; --ink2:#4a5158; --ink3:#7b848c;
+    --line:#e3e6ea; --red:#c0392b; --redbg:#fdf1ef; --redline:#f2cfc9;
+    --amber:#9a6400; --amberbg:#fdf7e8; --amberline:#f0e0b8;
+    --green:#1e7a4c; --greenbg:#eef8f2; --greenline:#c6e6d5;
+    --blue:#1f5fa8; --bluebg:#eff5fc; --blueline:#cbdff5;
+    --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.72 -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto;padding:40px 28px 72px}
+  header{border-bottom:2px solid var(--ink);padding-bottom:20px;margin-bottom:32px}
+  h1{font-size:25px;line-height:1.35;margin:0 0 10px;letter-spacing:-.01em}
+  .sub{color:var(--ink3);font-size:13.5px;font-family:var(--mono)}
+  h2{font-size:19px;margin:44px 0 16px;padding-bottom:8px;border-bottom:1px solid var(--line);letter-spacing:-.01em}
+  h3{font-size:16px;margin:28px 0 10px}
+  h4{font-size:14.5px;margin:20px 0 8px;color:var(--ink2)}
+  p{margin:10px 0}
+  code{font-family:var(--mono);font-size:13px;background:#eceff2;padding:1.5px 5px;border-radius:3px;color:#2a3038}
+  pre{background:#1f2429;color:#e6e9ec;padding:14px 16px;border-radius:6px;overflow-x:auto;
+    font-family:var(--mono);font-size:12.5px;line-height:1.62;margin:12px 0}
+  pre code{background:none;padding:0;color:inherit;font-size:inherit}
+  .kw{color:#f08a8a}.str{color:#a5d6a7}.cm{color:#7d878f;font-style:italic}.ok{color:#7fd1a6}.bad{color:#ff9d92}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:18px 20px;margin:16px 0}
+  .card.ok{border-left:4px solid var(--green);background:var(--greenbg);border-color:var(--greenline)}
+  .card.bad{border-left:4px solid var(--red);background:var(--redbg);border-color:var(--redline)}
+  .card.warn{border-left:4px solid var(--amber);background:var(--amberbg);border-color:var(--amberline)}
+  .card.info{border-left:4px solid var(--blue);background:var(--bluebg);border-color:var(--blueline)}
+  .tag{display:inline-block;font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.06em;
+    padding:2px 7px;border-radius:3px;vertical-align:2px;margin-right:8px}
+  .tag.ok{background:var(--green);color:#fff}
+  .tag.bad{background:var(--red);color:#fff}
+  .tag.warn{background:var(--amber);color:#fff}
+  .tag.info{background:var(--blue);color:#fff}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px;background:var(--panel)}
+  th,td{border:1px solid var(--line);padding:9px 11px;text-align:left;vertical-align:top}
+  th{background:#f0f2f5;font-weight:600;font-size:13px;color:var(--ink2)}
+  td.num,th.num{text-align:right;font-family:var(--mono)}
+  ul,ol{margin:10px 0;padding-left:22px} li{margin:5px 0}
+  .lead{font-size:16px;background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--green);
+    border-radius:8px;padding:16px 20px;margin:0 0 8px}
+  img.shot{width:100%;border:1px solid var(--line);border-radius:8px;display:block;margin:14px 0}
+  .cap{font-size:12.5px;color:var(--ink3);text-align:center;margin:-6px 0 20px}
+  .chain{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0}
+  .step{flex:1 1 200px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px;font-size:13px}
+  .step b{display:block;font-family:var(--mono);font-size:11px;color:var(--ink3);letter-spacing:.05em;margin-bottom:5px}
+  .hl{background:#fff6d8;padding:0 3px;border-radius:2px}
+  .foot{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);color:var(--ink3);font-size:12.5px;font-family:var(--mono)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>dsh-plugin-npm-manager 0.4.0<br>独立标签页 · 三范围 · 结果缓存</h1>
+  <div class="sub">2026-09-19 · 0.2.0 → 0.4.0 · dsh 0.1.5-rc.2 · profile = web · 结论均来自本机实测</div>
+</header>
+
+<div class="lead">
+  <b>三轮需求全部完成，且都在真实浏览器里验证过。</b>
+  <ul style="margin:10px 0 0">
+    <li><b>能看见</b>：`设置 → NPM 管理器` 是独立标签页（与「邮箱助手」同级），不是卡片</li>
+    <li><b>看得对</b>：三范围（本项目 / 全局 / 全系统），全系统 219 个包标注所属项目、可按项目筛选</li>
+    <li><b>看得快</b>：结果缓存 —— 6 次范围切换只产生 <b>4 次</b>请求，切回已看过的范围 <b>+0 请求</b></li>
+  </ul>
+</div>
+
+<h2>1. 三轮需求与交付</h2>
+
+<table>
+  <tr><th style="width:12%">轮次</th><th style="width:40%">用户原话（要点）</th><th>交付</th></tr>
+  <tr>
+    <td><b>第 1 轮</b><br><span style="font-size:12px;color:#7b848c">0.3.0</span></td>
+    <td>"插件装了但设置页什么都不显示"</td>
+    <td>修掉三层阻断（挂载 / 渲染 / 注册），面板出现</td>
+  </tr>
+  <tr>
+    <td><b>第 2 轮</b><br><span style="font-size:12px;color:#7b848c">0.3.0</span></td>
+    <td>"这样不好看，能给他单独做一个标签页吗？像我们的邮箱助手一样"</td>
+    <td>改注册 <code>settings.section</code>，成为独立整页</td>
+  </tr>
+  <tr>
+    <td><b>第 3 轮</b><br><span style="font-size:12px;color:#7b848c">0.4.0</span></td>
+    <td>"应该加一个选项：本项目、全局、全系统…本项目可以指定任何项目，
+        在全系统中要区分是哪个项目（且可以做筛选）"</td>
+    <td>三范围模型 + 项目发现 + 项目列 + 项目筛选 + 项目选择器</td>
+  </tr>
+  <tr>
+    <td><b>第 4 轮</b><br><span style="font-size:12px;color:#7b848c">0.4.0</span></td>
+    <td>"加缓存机制…只在进入这个插件刷新后就暂存，而不是每切换一个子选项就重新刷新，
+        包括筛选加载从缓存直接读取"</td>
+    <td>两层缓存（服务端 + 客户端），按 <code>(scope, project)</code> 分键</td>
+  </tr>
+</table>
+
+<h2>2. 第 1 轮：为什么"插件装了却什么都不显示"</h2>
+
+<p>根因是三层<b>串联</b>阻断 —— 任何一层不修都看不到面板。原来的 31 个断言全绿，却一条都没覆盖到这三层。</p>
+
+<div class="chain">
+  <div class="step"><b>第 1 层 · 挂载</b>插件从未进入 cordis 配置树<br><code>patch: entry "npm-manager" not found</code></div>
+  <div class="step"><b>第 2 层 · 渲染</b>注册的不是 React 组件<br><i>Objects are not valid as a React child</i></div>
+  <div class="step"><b>第 3 层 · 注册</b>bundle id 与包名不一致<br><i>loaded without registering</i></div>
+</div>
+
+<div class="card bad">
+  <span class="tag bad">第 1 层</span><b>插件从未被挂载 —— 它连报错的机会都没有</b>
+  <pre><code>$ dsh --profile web --dump-config
+dsh: [.../cordis.patch.yml] <span class="bad">patch: entry "npm-manager" not found</span>
+$ grep -c 'npm-manager' dump.yml   <span class="bad">→ 0</span></code></pre>
+  <p>三处配置同时错：① 插件 patch 用了顶层 <code>- id:</code>（非 insert 补丁要求 id 命中<b>已存在</b>条目，
+  未命中就 warn + 丢弃，<b>不创建</b>），且 <code>name</code> 填了 pnpm 的 <code>link:./src/index.ts</code>；
+  ② profile 的 <code>dsh.profile.bundles</code> 没登记本包 → 插件的 patch 根本不会被 apply；
+  ③ profile 自己的那段 <code>- id: npm-manager</code> 因 id 不存在被静默丢弃。</p>
+</div>
+
+<div class="card bad">
+  <span class="tag bad">第 2 层</span><b>注册的"组件"不是 React 组件</b>
+  <pre><code><span class="cm">// 渲染器 dsh-client-ui-renderer/lib/client.js:652</span>
+<span class="kw">return</span> jsx(<span class="bad">Comp</span>, { ...kit, ...injected, ...ownerProps });
+
+<span class="cm">// 旧代码注册的是返回普通对象的函数</span>
+scoped.slots.register(def, <span class="kw">function</span> () {
+  <span class="kw">return</span> { render: <span class="kw">function</span> (props) { ... } }   <span class="bad">// React 收到对象 → 抛错</span>
+})</code></pre>
+  <p>而且组件读 <code>props.target</code> / <code>props.dom</code> —— slot kit 提供的是
+  <code>t</code> / <code>renderSlot</code> / store，<b>没有 DOM 注入入口</b>。</p>
+</div>
+
+<div class="card bad">
+  <span class="tag bad">第 3 层</span><b>bundle 的 <code>id</code> 与包名不一致 —— 最隐蔽的一层</b>
+  <pre><code><span class="cm">// dsh-client-modules/lib/client.js:248</span>
+<span class="kw">if</span> (!<span class="kw">this</span>.factories.has(id))
+  <span class="kw">throw new</span> Error(<span class="str">`bundle ${url} loaded without registering "${id}"`</span>);</code></pre>
+  <p><code>id</code> 是图行 id = <b>包名</b>。旧产物写的是 <code>id: 'npm-manager'</code>，
+  而包名是 <code>dsh-plugin-npm-manager</code> → 必然抛错。
+  <b>这一层服务端 <code>--dump-config</code> 全绿也照样炸，只有真实浏览器能暴露。</b>
+  旁边的社区插件 <code>@changfenhuang/dsh-annotation</code> 源码里正好有一条注释点明这个坑。</p>
+</div>
+
+<h2>3. 第 2 轮：从卡片到独立标签页</h2>
+
+<p>注册面从 <code>settings.plugin.item</code>（「插件 → 插件配置」里的一张卡）改为
+<code>settings.section</code>（左侧导航里的一整页）：</p>
+
+<pre><code>ctx.slots.inject('settings.section', () =&gt; ctx.slots.register({
+  name: 'settings.section',
+  id: NS,                    <span class="cm">// 'npm-manager'</span>
+  order: 37,                 <span class="cm">// 邮箱助手 35 · 插件市场 40 → 插在两者之间</span>
+  label: () =&gt; t('nav'),     <span class="cm">// 函数 → 可随语言切换</span>
+  locale: NS,                <span class="cm">// 字符串命名空间 → 组件拿到 t 座位</span>
+}, NpmManagerSection))</code></pre>
+
+<p>官方渲染点是 <code>renderSlot("settings.section", { close }, { only: active })</code>；
+导航行来自 <code>ctx.slots.entries("settings.section")</code> 的 <code>{id, order, label}</code> 并按 order 排序。
+邮箱助手同样只有 section、没有卡片 —— 现在两者形态一致。</p>
+
+<h2>4. 第 3 轮：三范围 + 项目发现</h2>
+
+<h3>4.1 一个必须先解决的认知问题</h3>
+
+<div class="card warn">
+  <span class="tag warn">关键发现</span><b>DSH 工作区是「容器目录」，不是项目目录</b>
+  <p>最初把「全系统」实现为"扫所有工作区根目录"，结果只出 1 个项目 9 个包。核实后发现是数据事实而非 bug：</p>
+  <pre><code>日常非项目活动      <span class="bad">无 package.json</span>
+web插件             <span class="bad">无 package.json</span>
+jkapp_ai_api        <span class="bad">无 package.json</span>
+记忆插件 / 背景插件 / day05   <span class="bad">无 package.json</span>
+
+<span class="cm"># 真正的 Node 项目都在子目录里：</span>
+D:/yang/插件设计/web插件/dsh-manager/package.json
+D:/yang/插件设计/web插件/email-assistant/package.json
+D:/yang/day05/TencentDB-Agent-Memory/MemoryCore/package.json  <span class="cm">（还有 MemoryKnowledge / MemoryPanel / MemoryProxy）</span></code></pre>
+  <p>所以「全系统」必须<b>下钻发现子项目</b>。实测：<b>6 个工作区 → 13 个真项目</b>。</p>
+</div>
+
+<h3>4.2 三个范围</h3>
+
+<table>
+  <tr><th style="width:14%">范围</th><th style="width:26%">含义</th><th>界面能力</th></tr>
+  <tr><td><code>project</code><br>本项目</td><td>单个项目目录，默认 dsh 进程 cwd</td><td>项目下拉（13 个已知项目）+「自定义路径…」输入框</td></tr>
+  <tr><td><code>global</code><br>全局</td><td>npm 全局安装目录</td><td>无项目列</td></tr>
+  <tr><td><code>system</code><br>全系统</td><td>所有已知项目</td><td><b>「项目」列</b>标注每行归属 + <b>项目下拉筛选</b> + 统计「N 个项目」</td></tr>
+</table>
+
+<p>项目列表来自宿主 <code>workspaceRegistry</code> 服务（<code>@deepseek-ai/dsh-workspace</code>），
+通过 <code>ctx.inject(['workspaceRegistry'])</code> 作<b>降级边界</b> ——
+服务缺失时退化为只有 cwd，插件照常工作。</p>
+
+<h3>4.3 发现规则（都是写死的不变量，不做隐藏启发式）</h3>
+
+<ul>
+  <li>跳过 <code>.</code> 与 <code>_</code> 前缀目录。<code>_</code> 是实测得出的：本机
+    <code>_dsh-uninstalled-backup-*</code> / <code>_backup-redesign-*</code> 是备份，
+    扫它们会报出<b>并未在用</b>的包，属误导。</li>
+  <li>跳过 <code>node_modules</code> / <code>.git</code> / <code>dist</code> / <code>build</code> /
+    <code>.venv</code> / <code>target</code> / <code>vendor</code> 等。</li>
+  <li><b>不跟随符号链接</b> —— <code>withFileTypes().isDirectory()</code> 对符号链接返回 false，
+    天然避免环。代价：符号链接指向的项目不会被发现。</li>
+  <li>有 <code>maxDepth</code>（默认 3）与 <code>limit</code>（默认 200）兜底。</li>
+</ul>
+
+<h2>5. 第 4 轮：结果缓存</h2>
+
+<p>问题：全系统一次要扫 220 个包、每个都查 registry，实测几十秒。而切换范围/项目是高频操作。
+方案是<b>两层缓存</b>，按 <code>(scope, projectPath)</code> 分键：</p>
+
+<table>
+  <tr><th style="width:16%">层</th><th>行为</th></tr>
+  <tr><td><b>服务端</b></td><td><code>listCacheTtlMs</code> 默认 30 分钟；响应带 <code>cached</code> / <code>scannedAt</code>。
+    点「刷新缓存」立即作废，不看 TTL。</td></tr>
+  <tr><td><b>客户端</b></td><td>同一 key 命中本地缓存时<b>一个请求都不发</b>。
+    只有该组合首次访问、或用户点「刷新缓存」才请求。</td></tr>
+  <tr><td><b>筛选</b></td><td>搜索 / 仅看可升级 / 项目筛选全部是纯客户端过滤，零请求。</td></tr>
+</table>
+
+<p>界面在统计行显示「数据 22:37 (缓存)」—— 你能一眼看出用的是缓存，而不是怀疑数据没刷新。</p>
+
+<h3>5.1 顺带修掉一个真缺陷：「刷新缓存」原本是假的</h3>
+
+<div class="card bad">
+  <span class="tag bad">Bug</span><b><code>invalidate()</code> 只改时间戳，registry 缓存从没被清过</b>
+  <p>结果是 TTL 未到时点「刷新缓存」拿到的还是旧数据 —— 按钮在骗人。
+  现在三处缓存（结果 / 项目发现 / registry 元数据）一起作废，并新增
+  <code>RegistryClient.clearCache()</code>。</p>
+</div>
+
+<h2>6. 验证证据</h2>
+
+<h3>6.1 缓存行为 —— 用请求计数取证（比看界面硬）</h3>
+
+<table>
+  <tr><th>操作</th><th class="num">累计 <code>/packages</code> 请求</th><th class="num">数据时间</th><th>结论</th></tr>
+  <tr><td>进入（本项目）</td><td class="num">1</td><td class="num">22:35</td><td>首次扫描</td></tr>
+  <tr><td>切全局</td><td class="num">2</td><td class="num">22:36</td><td>首次扫描</td></tr>
+  <tr><td>切全系统</td><td class="num">3</td><td class="num">22:37</td><td>首次扫描（最慢的一次）</td></tr>
+  <tr class="hl"><td><b>切回本项目</b></td><td class="num"><b>3（+0）</b></td><td class="num"><b>22:35 未变</b></td><td><b>命中缓存</b></td></tr>
+  <tr class="hl"><td><b>再切全系统</b></td><td class="num"><b>3（+0）</b></td><td class="num"><b>22:37 未变</b></td><td><b>命中缓存</b></td></tr>
+  <tr><td>点刷新缓存</td><td class="num">4</td><td class="num">更新</td><td>显式作废</td></tr>
+  <tr class="hl"><td>搜索筛选</td><td class="num"><b>4（+0）</b></td><td class="num">—</td><td><b>纯客户端</b></td></tr>
+</table>
+
+<p><code>_diag/cache-check.mjs</code> 用 <code>page.on('request')</code> 统计请求数 —— <b>11/11 断言通过</b>。</p>
+
+<h3>6.2 服务端接口</h3>
+
+<pre><code>$ curl "…/plugins/npm-manager/projects"
+<span class="ok">13 个项目</span>（当前 cwd + 6 个工作区下发现的 12 个子项目）
+
+$ curl "…/plugins/npm-manager/packages?scope=system"
+total=<span class="ok">219</span>  outdated=<span class="ok">170</span>  projectCount=<span class="ok">13</span>
+  dsh-plugin-npm-manager                          9
+  web插件/dsh-manager                              2
+  web插件/email-assistant                         10
+  day05/TencentDB-Agent-Memory/MemoryCore         48
+  day05/TencentDB-Agent-Memory/MemoryPanel/web    33
+  …（共 12 个有 package.json 的项目）
+
+<span class="cm"># 同 key 第二次请求 → 命中缓存</span>
+第1次: cached=false  scannedAt=1789828556922  total=9
+第2次: cached=<span class="ok">true</span>   scannedAt=1789828556922  total=9   <span class="cm">← scannedAt 未变</span></code></pre>
+
+<h3>6.3 真实浏览器</h3>
+
+<img class="shot" src="验证截图_三范围与缓存_20260919.png" alt="NPM 管理器标签页：全系统范围 + 项目列 + 搜索筛选">
+<div class="cap">实际截图：左侧导航「NPM 管理器」在「邮箱助手」与「插件市场」之间；
+全系统范围显示「项目」列；搜索 <code>deepseek</code> → 24 / 219；
+统计行末尾「数据 22:37 (缓存)」</div>
+
+<pre><code>### 三范围端到端
+  本项目   统计: 共 9 个包 · 4 个可升级                          行数 9
+  全局     统计: 共 4 个包 · 2 个可升级                          行数 4
+           └─ 含 <span class="ok">@colbymchenry/codegraph</span>、<span class="ok">@deepseek-ai/dsh</span>（修前这两个永远列不出来）
+  全系统   统计: 共 219 个包 · 170 个可升级 · <span class="ok">13 个项目</span>        行数 219
+           表头: ["包名","当前版本","最新版本","<span class="ok">项目</span>","说明"]
+  项目筛选 选择「web插件/dsh-manager」→ 行数 <span class="ok">2</span>，项目 ["web插件/dsh-manager"]
+
+### 页面错误
+  （无）
+### 失败请求
+  （无）</code></pre>
+
+<h2>7. 顺带修掉的真缺陷</h2>
+
+<table>
+  <tr><th style="width:26%">缺陷</th><th>证据 / 影响</th></tr>
+  <tr>
+    <td><b>「刷新缓存」是假的</b></td>
+    <td><code>invalidate()</code> 没清 registry 缓存 → TTL 未到时刷新后仍是旧数据</td>
+  </tr>
+  <tr>
+    <td><b>全局扫描永久跳过所有 scoped 包</b></td>
+    <td><code>if (item.startsWith('@')) continue</code>。
+      实测修前 <b>0 个（无 APPDATA）/ 2 个（有 APPDATA）</b> → 修后两种情况都是 <b>4 个</b>：
+      <code>@colbymchenry/codegraph</code>、<code>@deepseek-ai/dsh</code>、<code>opencode-ai</code>、<code>pnpm</code></td>
+  </tr>
+  <tr>
+    <td><b>全局扫描只认 <code>APPDATA</code></b></td>
+    <td>缺失时静默返回空。改为 <code>NPM_CONFIG_PREFIX</code> → <code>APPDATA</code> →
+      <code>USERPROFILE</code> → <code>homedir()</code> 逐级兜底</td>
+  </tr>
+  <tr>
+    <td><b><code>/packages/:name</code> 死路由</b></td>
+    <td><code>kind:'exact'</code> 的 path 不支持 <code>:param</code>（exact 表是字面量 Map 查找）
+      → 永远命中不了，请求落到 SPA fallback。改 <code>kind:'prefix'</code></td>
+  </tr>
+  <tr>
+    <td><b><code>onClick: load</code> 传错参数</b></td>
+    <td>点击事件对象被当成 <code>load(force)</code> 的 <code>force</code>（真值）→ 意外走强制刷新分支</td>
+  </tr>
+</table>
+
+<h2>8. 测试方法上的两处升级</h2>
+
+<div class="card info">
+  <span class="tag info">1</span><b>路由测试改用宿主的真实实现，不再写 fake</b>
+  <p>旧版用 fake webServer「只收集 (kind,path) 不匹配」—— <b>结构上就不可能发现死路由</b>。
+  现在把 <code>WebServer.prototype.register / match</code> 借出来，用一个只有
+  <code>{exact, prefixes}</code> 的普通对象当 <code>this</code>：</p>
+  <pre><code>const { WebServer } = await import(pathToFileURL(wsEntry).href)
+const { register, match } = WebServer.prototype
+const host = { exact: new Map(), prefixes: new Map() }
+const webServer = { register: (route) =&gt; register.call(host, route) }
+<span class="cm">// 断言 match.call(host, '/plugins/npm-manager/packages/typescript') 命中 prefix 表</span></code></pre>
+  <p>于是「注册唯一键检测」「exact 优先于 prefix」「最长前缀优先」全是<b>宿主的真实语义</b>，不是复刻。</p>
+</div>
+
+<div class="card info">
+  <span class="tag info">2</span><b>缓存用请求计数验证，不靠界面文本</b>
+  <p><code>page.on('request')</code> 数请求数是最硬的证据；配合「数据 HH:MM 是否变化」即可证明缓存真的生效。
+  另外踩到两个坑：组件重新加载期间会<b>保留上一批行</b>（只等 <code>rowCount &gt; 0</code> 会读到 stale 数据），
+  所以断言要等<b>该范围独有的标志</b>（如统计里出现「N 个项目」）或统计文本发生变化。</p>
+</div>
+
+<h2>9. 改动清单</h2>
+
+<table>
+  <tr><th style="width:32%">文件</th><th>改动</th></tr>
+  <tr><td><code>src/services/scanner.ts</code></td><td>三范围；<code>discoverNodeProjects()</code> 项目发现；全局候选路径兜底 + scoped 下钻</td></tr>
+  <tr><td><code>src/services/state.ts</code></td><td>结果缓存（<code>listCache</code> + TTL）、项目列表缓存、<code>listProjects()</code>、<code>cached</code>/<code>scannedAt</code></td></tr>
+  <tr><td><code>src/services/registry.ts</code></td><td>新增 <code>clearCache()</code> / <code>cacheSize()</code></td></tr>
+  <tr><td><code>src/config.ts</code></td><td>新增 <code>projectScanDepth</code> / <code>listCacheTtlMs</code>；<code>scope</code> 枚举改为三范围</td></tr>
+  <tr><td><code>src/index.ts</code></td><td><code>ctx.inject(['workspaceRegistry'])</code> 接入 DSH 工作区（降级边界）</td></tr>
+  <tr><td><code>src/web/routes.ts</code></td><td>新增 <code>/projects</code>；<code>/packages</code> 支持 <code>scope</code> + <code>project</code>；<code>:name</code> 改 prefix</td></tr>
+  <tr><td><code>src/tools/list-packages.ts</code></td><td>scope 三范围 + <code>project</code> 参数；输出新增 project/projectPath/projectCount/cached/scannedAt；render 改紧凑逐行</td></tr>
+  <tr><td><code>src/tools/apply-upgrade.ts</code></td><td><code>scope</code> 枚举 <code>local</code> → <code>project</code></td></tr>
+  <tr><td><code>client/src/index.js</code></td><td>独立标签页（settings.section）；三范围 + 项目选择器/筛选；客户端缓存；数据时间显示</td></tr>
+  <tr><td><code>tests/*.mjs</code> · <code>scripts/dev-conformance-check.mjs</code></td><td>断言 31 → <b>90</b>；新增项目发现 / 缓存语义 / 真实匹配器 / 死路由回归</td></tr>
+  <tr><td><code>_diag/cache-check.mjs</code></td><td><b>新增</b>：缓存行为专项验证（按请求数取证）</td></tr>
+  <tr><td><code>_diag/browser-check.mjs</code></td><td>改为三范围端到端（严格等待，避免 stale 数据）</td></tr>
+  <tr><td><code>DEPLOY.md</code></td><td>新增 §3.5 bundles 步骤、§4.5 配置项参考；修正 §4/§6.4/§7.1/§8 的过期表述</td></tr>
+</table>
+
+<h2>10. 破坏性变更与迁移</h2>
+
+<div class="card warn">
+  <span class="tag warn">迁移</span><b>配置 <code>scope</code> 枚举变更</b>
+  <p><code>local | global | both</code> → <code>project | global | system</code>，默认 <code>project</code>。
+  两处 patch 已同步迁移（<code>scope: both</code> → <code>scope: project</code>）：</p>
+  <ul>
+    <li>插件自带 <code>cordis.patch.yml</code></li>
+    <li>profile 的 <code>~/.dsh/profiles/web/cordis.patch.yml</code></li>
+  </ul>
+  <p><b>不迁移会导致 settings 注册失败</b>（非法存量值会让整个注册挂掉，而不只是该字段回退默认）。</p>
+</div>
+
+<p>另有一处工具契约变更：<code>npm_list_packages</code> 的 <code>scope</code> 同步为三范围、
+新增 <code>project</code> 参数、输出新增 5 个字段、<code>render</code> 从整段 JSON 改为逐行紧凑文本
+（220 个包时 JSON 会淹没上下文）。</p>
+
+<h2>11. 剩余问题（已定位，本轮未修）</h2>
+
+<ol>
+  <li><b><code>npm_apply_upgrade</code> 永久不可用</b>：guard 读
+    <code>exec.agent?.approvals?.get?.(callId)?.granted</code>，而官方 <code>ToolExecution</code> 是
+    <code>{callId, rootCallId, name, arguments, agent?, parent?, signal, token}</code>
+    —— 没有 <code>approvals</code>，<code>dsh-agent</code> 包里也搜不到。granted 恒为 undefined →
+    100% 被拦且用户无法批准。应改走 <code>ctx.on('tools/pre-execute')</code> + <code>ctx.userQuestions.ask()</code>。</li>
+  <li><b>界面上不能改配置</b>：4 个字段仍需改 profile 的 patch。</li>
+  <li><b>changelog 拉取</b>：<code>RegistryClient.getChangelog</code> 仍返回空数组（GitHub Releases 未接）。</li>
+  <li><b>项目发现的边界</b>：不跟随符号链接；跳过 <code>_</code> 前缀目录（代价是
+    <code>_</code> 开头的真实项目需用「自定义路径」访问）。</li>
+  <li><b>vendor 快照未清理</b>：仍带 <code>scripts</code> / <code>devDependencies</code> 与 <code>.archive/</code>。</li>
+</ol>
+
+<h2>12. 回滚与自查</h2>
+
+<pre><code><span class="cm"># 回滚备份（含 profile 与 vendor 两侧）</span>
+C:\Users\Admin\.dsh\_backup-npm-manager-fix-20260919-195601\
+
+<span class="cm"># 部署后自查（两条都过才算生效）</span>
+dsh --profile web --dump-config &gt; /tmp/d.yml 2&gt;/tmp/w.txt
+grep -c 'npm-manager' /tmp/d.yml     <span class="cm"># 必须 &gt;= 1</span>
+grep 'not found' /tmp/w.txt          <span class="cm"># 不能有 npm-manager 那条</span></code></pre>
+
+<div class="foot">
+  测试：90 个断言（build-client 11 · tool-schema 33 · routes 16 · client 17 · conformance 13）+ 浏览器专项 11，全绿<br>
+  证据文件：<code>_diag/cache.log</code> · <code>_diag/scopes5.log</code> · <code>_diag/cache-final.png</code><br>
+  关键源码：<code>dsh-app-boot/lib/index.js:59</code>（patch 语义）·
+  <code>dsh-client-modules/lib/client.js:248</code>（id 必须等于包名）·
+  <code>dsh-client-ui-renderer/lib/client.js:602,652</code>（locale 座位 / 组件渲染）·
+  <code>dsh-host-webserver/lib/index.js:322</code>（exact 表字面量查找）
+</div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,47 @@
+# 运行时依赖（peer 由宿主 profile 提供）
+node_modules/
+
+# 早期调试残骸（与本次 4 个版本无关）
+.archive/
+PLAN.round1-11.archive.md
+PROJECT_STATUS.md.round1-11.bak
+_archive-old-src.mjs
+_strip-js.mjs
+_strip-ts.mjs
+_strip-ts2.mjs
+_strip-ts3.mjs
+cordis.overlay.yml
+PKG_INVENTORY.md
+
+# 测试 mock 临时产物（patched-src 让测试能用真 schemastery/dsh-tools）
+/src/.patched/
+*.patched.ts
+*.patched.d.ts
+
+# 用户配置备份（绝对不能入库 —— 含 settings.yaml 备份）
+*.bak
+*.bak-*
+settings.yaml.bak-*
+
+# 任何 dsh 配置覆盖文件（验证实例用，不入库）
+*.patch.yml
+
+# _diag 目录：验证脚本进库；所有运行时产物（截图/日志/HTML/txt/cookie/扫描输出）一律不进
+_diag/*.log
+_diag/*.log-*
+_diag/*.png
+_diag/*.txt
+_diag/*.html
+_diag/*.json
+_diag/*.yml
+_diag/rebuild.txt
+_diag/warm*.txt
+_diag/measure-*.log
+_diag/scopes-result.json
+_diag/dump.yml
+_diag/loading-timeline.json
+_diag/cj.txt
+_diag/cj2.txt
+_diag/boot-bundle.js
+_diag/index*.html
+_diag/index-with-token.html

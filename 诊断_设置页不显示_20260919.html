@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsh-plugin-npm-manager 诊断报告 — 设置页不显示 Web 面板</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#1c1f23; --ink2:#4a5158; --ink3:#7b848c;
+    --line:#e3e6ea; --line2:#eef1f4;
+    --red:#c0392b; --redbg:#fdf1ef; --redline:#f2cfc9;
+    --amber:#9a6400; --amberbg:#fdf7e8; --amberline:#f0e0b8;
+    --green:#1e7a4c; --greenbg:#eef8f2; --greenline:#c6e6d5;
+    --blue:#1f5fa8; --bluebg:#eff5fc; --blueline:#cbdff5;
+    --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.72 -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;}
+  .wrap{max-width:1000px;margin:0 auto;padding:40px 28px 72px}
+  header{border-bottom:2px solid var(--ink);padding-bottom:20px;margin-bottom:32px}
+  h1{font-size:26px;line-height:1.35;margin:0 0 10px;letter-spacing:-.01em}
+  .sub{color:var(--ink3);font-size:13.5px;font-family:var(--mono)}
+  h2{font-size:19px;margin:44px 0 16px;padding-bottom:8px;border-bottom:1px solid var(--line);letter-spacing:-.01em}
+  h3{font-size:16px;margin:28px 0 10px}
+  h4{font-size:14.5px;margin:20px 0 8px;color:var(--ink2)}
+  p{margin:10px 0}
+  code{font-family:var(--mono);font-size:13px;background:#eceff2;padding:1.5px 5px;border-radius:3px;color:#2a3038}
+  pre{background:#1f2429;color:#e6e9ec;padding:14px 16px;border-radius:6px;overflow-x:auto;
+    font-family:var(--mono);font-size:12.5px;line-height:1.62;margin:12px 0}
+  pre code{background:none;padding:0;color:inherit;font-size:inherit}
+  .kw{color:#f08a8a}.str{color:#a5d6a7}.cm{color:#7d878f;font-style:italic}.ok{color:#7fd1a6}.bad{color:#ff9d92}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:18px 20px;margin:16px 0}
+  .card.p0{border-left:4px solid var(--red);background:var(--redbg);border-color:var(--redline)}
+  .card.p1{border-left:4px solid var(--amber);background:var(--amberbg);border-color:var(--amberline)}
+  .card.p2{border-left:4px solid var(--blue);background:var(--bluebg);border-color:var(--blueline)}
+  .card.good{border-left:4px solid var(--green);background:var(--greenbg);border-color:var(--greenline)}
+  .tag{display:inline-block;font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.06em;
+    padding:2px 7px;border-radius:3px;vertical-align:2px;margin-right:8px}
+  .tag.p0{background:var(--red);color:#fff}
+  .tag.p1{background:var(--amber);color:#fff}
+  .tag.p2{background:var(--blue);color:#fff}
+  .tag.ok{background:var(--green);color:#fff}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px;background:var(--panel)}
+  th,td{border:1px solid var(--line);padding:9px 11px;text-align:left;vertical-align:top}
+  th{background:#f0f2f5;font-weight:600;font-size:13px;color:var(--ink2)}
+  td code{font-size:12.5px}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  .lead{font-size:16px;background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--ink);
+    border-radius:8px;padding:16px 20px;margin:0 0 8px}
+  .chain{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0}
+  .step{flex:1 1 200px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px;font-size:13px}
+  .step b{display:block;font-family:var(--mono);font-size:11px;color:var(--ink3);letter-spacing:.05em;margin-bottom:5px}
+  .foot{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);color:var(--ink3);font-size:12.5px;font-family:var(--mono)}
+  .kbd{font-family:var(--mono);font-size:12px;background:#e8ebee;border:1px solid #d5d9dd;border-bottom-width:2px;
+    border-radius:3px;padding:1px 5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>dsh-plugin-npm-manager 诊断报告<br>设置页为什么不显示 Web 面板</h1>
+  <div class="sub">2026-09-19 · 插件 0.2.0 · dsh 0.1.5-rc.2 · profile = web · 全部结论均来自本机实测</div>
+</header>
+
+<div class="lead">
+  <b>结论：插件从未被挂载进 DSH 的配置树，所以它连"加载失败"的机会都没有。</b><br>
+  <code>dsh --profile web --dump-config</code> 的合成结果里 <code>npm-manager</code> 出现 <b>0 次</b>，
+  同时终端打出 <code>patch: entry "npm-manager" not found</code>。
+  配置树里没有它 → 服务端 <code>apply()</code> 不执行 → 客户端 bundle 不被扫描 →
+  Settings → Plugins 里自然什么都不会出现。<br><br>
+  即使把它挂上，面板依然出不来：<b>客户端注册的"组件"不是 React 组件</b>，slot 渲染器会直接抛错。
+  这两条是串联的，必须都修。
+</div>
+
+<h2>1. 证据链</h2>
+
+<div class="chain">
+  <div class="step"><b>① 合成配置树</b>npm-manager 出现 <b>0</b> 次<br>email-assistant 出现 <b>3</b> 次</div>
+  <div class="step"><b>② 加载器告警</b><code>patch: entry "npm-manager" not found</code></div>
+  <div class="step"><b>③ 源码定位</b><code>applyEntryPatches()</code>：id 未命中 → warn + <code>continue</code></div>
+  <div class="step"><b>④ 客户端发现机制</b>"scans the host <b>Loader's entries</b>" → 无条目则无 bundle</div>
+</div>
+
+<pre><code><span class="cm">$ dsh --profile web --dump-config</span>
+dsh: [@michengai/dsh-archive-manager] patch: entry "ui-settings-unarchive-sessions" not found
+<span class="bad">dsh: [C:\Users\Admin\.dsh\profiles\web\cordis.patch.yml] patch: entry "npm-manager" not found</span>
+
+<span class="cm"># 合成结果里数条目</span>
+$ grep -c 'npm-manager'   dump-web.yml   <span class="bad">→ 0</span>
+$ grep -c 'email-assistant' dump-web.yml <span class="ok">→ 3</span>
+
+<span class="cm"># email-assistant 是正确挂载的对照组</span>
+601: # == email-assistant, patched by C:\Users\Admin\.dsh\profiles\web\cordis.patch.yml
+602: - id: email-assistant
+603:   name: email-assistant</code></pre>
+
+<h3>1.1 加载器的 patch 语义（决定性）</h3>
+<p><code>@deepseek-ai/dsh-app-boot/lib/index.js:59</code> 的 <code>applyEntryPatches()</code>——这是 DSH 唯一的 patch 语义，挂载与 <code>--dump-config</code> 共用同一份实现：</p>
+
+<pre><code><span class="kw">const</span> target = entryMap.get(id);
+<span class="kw">if</span> (!target) {
+  warn(<span class="str">"patch: entry %C not found"</span>, id);
+  <span class="bad">continue;</span>            <span class="cm">// ← 跳过。不会创建条目。</span>
+}</code></pre>
+
+<p>即：<b>顶层 <code>- id: X</code> 是"改已存在的条目"，不是"新增条目"。</b>新增必须用 <code>- insert: [...]</code>。而 <code>npm-manager</code> 这个 id 在整棵树里根本不存在（没有任何 bundle 插入过它），所以那三行配置被静默丢弃——只留一条 warn。</p>
+
+<h2>2. 阻断级缺陷（P0）</h2>
+
+<div class="card p0">
+  <span class="tag p0">P0-1</span><b>插件不在 <code>dsh.profile.bundles</code> 里，也没有以 <code>insert</code> 形式插入</b>
+  <p style="margin-top:12px">三处配置同时错，任何一处单独修好都不够：</p>
+
+  <h4>① <code>~/.dsh/profiles/web/package.json</code> — bundles 缺项</h4>
+  <p><code>dsh.profile.bundles</code> 列表里有 <code>email-assistant</code>、<code>dsh-mcp-skill-panel</code>……唯独没有 <code>dsh-plugin-npm-manager</code>。bundle 列表是"哪些包的 <code>dsh.bundle.patch</code> 参与合成"的唯一入口。</p>
+
+  <h4>② <code>~/.dsh/profiles/web/cordis.patch.yml</code> — 用了 id 形式而非 insert</h4>
+  <pre><code><span class="cm"># 现状（无效）</span>
+<span class="bad">- id: npm-manager
+  name: dsh-plugin-npm-manager
+  config: { scope: both, ... }</span>
+
+<span class="cm"># 应为</span>
+<span class="ok">- insert:
+    - id: npm-manager
+      name: dsh-plugin-npm-manager
+      config: { scope: both, ... }</span></code></pre>
+
+  <h4>③ 插件自带的 <code>cordis.patch.yml</code> — 双重错误</h4>
+  <pre><code><span class="bad">- id: npm-manager
+  name: link:./src/index.ts</span>       <span class="cm">← 既无 insert（同样被跳过），
+                                 name 又填了 pnpm 的 link: 规格，
+                                 而且指向 TS 源码而不是构建产物 lib/</span></code></pre>
+  <p><code>name</code> 字段在 cordis 条目里是<b>包名</b>。<code>link:</code> 是 pnpm 的依赖协议，两者不能混用。这个 patch 即便被 insert 也解析不到任何模块。</p>
+
+  <h4>正确对照组：<code>email-assistant</code></h4>
+  <pre><code><span class="ok">- insert:
+    - id: email-assistant
+      name: email-assistant
+      config: { digest: {...}, security: {...} }</span></code></pre>
+  <p>并且它<b>同时</b>列在 <code>dsh.profile.bundles</code> 里。两条路都走通了，所以它能在设置页出现。</p>
+</div>
+
+<div class="card good">
+  <span class="tag ok">已验证</span><b>修法可用（实测，未改动用户环境）</b>
+  <p>用一个临时 overlay 验证 insert 形式确实能把条目挂进树：</p>
+  <pre><code><span class="cm"># _diag/probe-insert.patch.yml</span>
+- insert:
+    - id: npm-manager
+      name: dsh-plugin-npm-manager
+      config: { scope: both }
+
+$ dsh --profile web --patch ./_diag/probe-insert.patch.yml --dump-config
+649: # == D:\yang\...\_diag\probe-insert.patch.yml
+650: - id: npm-manager
+651:   name: dsh-plugin-npm-manager        <span class="ok">← 条目出现了</span></code></pre>
+  <p>另外确认插件入口本身是好的，依赖也齐全：</p>
+  <pre><code>$ node -e "import('dsh-plugin-npm-manager')"
+exports: Config, apply, inject, name
+name: npm-manager
+inject: ["tools","webServer","settings"]     <span class="ok">← 三个服务名都真实存在</span>
+
+semver / node-fetch / @deepseek-ai/schemastery / dsh-tools /
+dsh-host-webserver / dsh-settings            <span class="ok">全部 OK</span></code></pre>
+</div>
+
+<div class="card p0">
+  <span class="tag p0">P0-2</span><b>客户端注册的"组件"不是 React 组件，会被渲染器直接判死</b>
+  <p><code>settings.plugin.item</code> 槽位条目的渲染路径（<code>@deepseek-ai/dsh-client-ui-renderer/lib/client.js</code>）：</p>
+  <pre><code><span class="kw">function</span> renderEntry(slotKey, Comp, kit, standard, injected, slotInjected, ownerProps, ...) {
+  <span class="kw">return</span> jsx(<span class="bad">Comp</span>, { ...kit, ...injected, ...slotInjected.props, ...ownerProps });
+}                       <span class="cm">// Comp = entry.component，必须是 React 组件</span></code></pre>
+  <p>而 <code>client/client.js</code> 注册进去的第二个参数是一个<b>普通函数，返回普通对象</b>：</p>
+  <pre><code>scoped.slots.register({ name: <span class="str">'settings.plugin.item'</span>, key: <span class="str">'npm-manager'</span>, locale: {...} },
+  <span class="kw">function</span> () {
+    <span class="kw">return</span> { render: <span class="kw">function</span> (props) { ... } }   <span class="bad">// ← React 收到一个对象</span>
+  })</code></pre>
+  <p>React 拿到 <code>{render: fn}</code> 会报 <i>Objects are not valid as a React child</i>。即使外层不炸，内层 <code>render</code> 也永远不会被调用。</p>
+  <h4>而且它依赖的 prop 根本不存在</h4>
+  <pre><code><span class="kw">var</span> target = host.target || (host.dom &amp;&amp; host.dom.firstChild)
+<span class="kw">if</span> (!target) <span class="kw">return null</span>          <span class="cm">// slot kit 里既没有 target 也没有 dom</span></code></pre>
+  <p>slot kit 提供的标准座位是 <code>t</code>、<code>renderSlot</code>、store 等，没有任何 DOM 注入入口。这套"往 <code>innerHTML</code> 写字符串"的占位思路与 DSH 的 slot 契约完全不兼容。</p>
+  <h4>官方写法（dshmarket，同 profile 内已验证可用）</h4>
+  <pre><code>ctx.inject([<span class="str">"settingsScope"</span>], (scoped) =&gt; {
+  scoped.slots.inject(<span class="str">"settings.plugin.item"</span>, () =&gt; scoped.slots.register({
+    name: <span class="str">"settings.plugin.item"</span>, key: NS, locale: NS, inject: () =&gt; ({ t })
+  }, () =&gt; <span class="ok">React.createElement(SettingsCard, { t, onRemoved })</span>));
+});</code></pre>
+  <p>注意 <code>NS</code> 是<b>字符串命名空间</b>，而字典用 <code>ctx.locale.register(NS, {zh, en})</code> 单独注册。</p>
+</div>
+
+<div class="card p0">
+  <span class="tag p0">P0-3</span><b><code>locale</code> 传了对象，而契约要求命名空间字符串</b>
+  <pre><code><span class="cm">// 渲染器里的处理</span>
+<span class="kw">if</span> (entry.locale !== <span class="kw">void</span> 0) {
+  <span class="kw">if</span> (face === <span class="kw">void</span> 0) <span class="kw">throw new</span> SlotAssemblyError(...);
+  kit[<span class="str">"t"</span>] = localeSeat(face, <span class="bad">entry.locale</span>);      <span class="cm">// 当作 namespace 用</span>
+}
+
+<span class="cm">// locale 服务的实现</span>
+bind(ns) { ... <span class="kw">return</span> (key, params) =&gt; <span class="kw">this</span>.translate(ns, key, params); }
+translate(ns, key, ...) { <span class="kw">const</span> locales = <span class="kw">this</span>.dicts.get(ns); ... <span class="kw">return</span> key; }</code></pre>
+  <p>传入 <code>{ en: {...}, zh: {...} }</code> 对象后，<code>dicts.get(对象)</code> 必然取不到字典，<code>t('title')</code> 会<b>原样返回字符串 <code>'title'</code></b>——不会崩，但界面上显示的是裸 key。属于静默失败，最难排查。</p>
+  <p>正确形态：注册条目写 <code>locale: NS</code>（字符串），字典走 <code>ctx.locale.register(NS, { zh, en })</code>。</p>
+</div>
+
+<h2>3. 高危缺陷（P1）——挂载修好后仍然不可用</h2>
+
+<div class="card p1">
+  <span class="tag p1">P1-1</span><b><code>npm_apply_upgrade</code> 被自己的 guard 永久锁死</b>
+  <pre><code>ctx.tools.guard((exec) =&gt; {
+  <span class="kw">if</span> (exec.name !== <span class="str">'npm_apply_upgrade'</span>) <span class="kw">return</span>
+  <span class="kw">const</span> granted = <span class="bad">exec.agent?.approvals?.get?.(exec.callId)?.granted</span>
+  <span class="kw">if</span> (granted) <span class="kw">return</span>
+  <span class="kw">return</span> <span class="str">`npm 包升级是受控操作,需要用户事先批准(apply-upgrade guard)`</span>
+})</code></pre>
+  <p>官方 <code>ToolExecution</code> 类型（<code>dsh-tools/lib/types/index.d.ts:261</code>）的字段是：</p>
+  <pre><code>{ callId, rootCallId, name, arguments, agent?, parent?, signal, token }</code></pre>
+  <p><b>没有 <code>approvals</code>。</b>在整个 <code>dsh-agent</code> 包里也搜不到这个字段——它只出现在三个客户端包里（<code>dsh-client-connection</code> / <code>dsh-client-ui-cordis</code> / <code>dsh-cordis-client-runner</code>），属于 dynamic plugin 的专用面，普通 static 插件的 <code>exec</code> 上不存在。</p>
+  <p>后果：<code>granted</code> 永远是 <code>undefined</code> → guard 永远返回拒绝理由 → <b>四个工具里有一个 100% 不可用，且用户没有任何途径批准</b>。这是 conformance 技能 §8.1 点名的反模式（"某个功能 100% 不可用"）。</p>
+  <h4>正确做法</h4>
+  <pre><code>ctx.on(<span class="str">'tools/pre-execute'</span>, <span class="kw">async</span> (exec, next) =&gt; {
+  <span class="kw">if</span> (exec.name !== <span class="str">'npm_apply_upgrade'</span>) <span class="kw">return</span> next()
+  <span class="kw">const</span> answer = <span class="kw">await</span> ctx.userQuestions.ask({ ... })   <span class="cm">// 真实可询问的服务</span>
+  <span class="kw">return</span> answer ? next() : { reason: <span class="str">'用户取消'</span> }
+})</code></pre>
+  <p>参考实现：<code>@deepseek-ai/dsh-tool-ask-user/lib/index.js:97</code>。</p>
+</div>
+
+<div class="card p1">
+  <span class="tag p1">P1-2</span><b>路由 #2 是死路由——<code>kind: 'exact'</code> 不支持 <code>:param</code></b>
+  <pre><code>ctx.webServer.register({
+  kind: <span class="str">'exact'</span>,
+  path: <span class="bad">'/plugins/npm-manager/packages/:name'</span>,   <span class="cm">// 永远不会被命中</span>
+  handler: ...
+})</code></pre>
+  <p>webServer 的匹配逻辑（<code>dsh-host-webserver/lib/index.js:322</code>）：</p>
+  <pre><code>match(pathname) {
+  <span class="kw">const</span> exact = <span class="kw">this</span>.exact.get(pathname);        <span class="cm">// 字面量 Map 查找，无模式匹配</span>
+  <span class="kw">if</span> (exact) <span class="kw">return</span> exact;
+  <span class="kw">for</span> (<span class="kw">const</span> [prefix, route] <span class="kw">of this</span>.prefixes) {
+    <span class="kw">if</span> (pathname !== prefix &amp;&amp; !pathname.startsWith(<span class="str">`${prefix}/`</span>)) <span class="kw">continue</span>;
+    ...
+  }
+}</code></pre>
+  <p>exact 表是纯字面量查找，<code>:name</code> 会被当成普通字符。真实请求 <code>/plugins/npm-manager/packages/typescript</code> 既命中不了 exact，也没有对应 prefix，最终落到 SPA fallback，返回一个 HTML 页面而不是 JSON。</p>
+  <p>对照 dshmarket 的 30+ 条路由：<b>全部是 <code>kind:'exact'</code> + 无参数扁平路径</b>。这是实际约定。</p>
+  <h4>修法</h4>
+  <pre><code>ctx.webServer.register({
+  kind: <span class="str">'prefix'</span>,
+  path: <span class="ok">'/plugins/npm-manager/packages'</span>,   <span class="cm">// exact 表先查，#1/#3 仍优先</span>
+  handler: <span class="kw">async</span> (req, res) =&gt; { <span class="cm">/* 复用现有的 regex 解析 */</span> }
+})</code></pre>
+  <p>handler 里已有的 <code>url.pathname.match(/^\/plugins\/npm-manager\/packages\/(.+)$/)</code> 可以直接复用，只需补一个"裸 <code>/packages</code> 由 #1 处理"的分支。</p>
+</div>
+
+<div class="card p1">
+  <span class="tag p1">P1-3</span><b><code>settings</code> 服务用了模块级 <code>inject</code>，而非 <code>ctx.inject</code> 降级边界</b>
+  <pre><code><span class="kw">export const</span> inject = [<span class="str">'tools'</span>, <span class="str">'webServer'</span>, <span class="bad">'settings'</span>]</code></pre>
+  <p>dshmarket 的 <code>lib/settings.js</code> 里有一段专门解释为什么不能这么写：<code>settings</code> 服务在旧 host 上可能不存在，模块级 <code>inject</code> 会让 entry <b>永久 pending</b>；正确做法是 <code>ctx.inject(['settings'], cb)</code>——"<i>the graceful-degradation boundary: on a host with no settings service the callback never runs and the composed entry stands</i>"。</p>
+  <p>本 profile 装了 <code>@deepseek-ai/dsh-settings</code>（配置树里 <code>- id: settings / @deepseek-ai/dsh-settings-file</code>），所以<b>不是当前故障原因</b>，但属于契约偏差，换 profile 就会踩。</p>
+</div>
+
+<h2>4. 次要问题（P2）</h2>
+
+<table>
+  <tr><th style="width:26%">项</th><th>问题</th><th style="width:34%">建议</th></tr>
+  <tr>
+    <td><code>dsh.client.inject</code></td>
+    <td>只声明了 <code>@deepseek-ai/dsh-client-locale</code>，但代码依赖 <code>settingsScope</code>，其提供方是 <code>@deepseek-ai/dsh-client-ui-settings</code>。对照 dshmarket 声明了 3 个包。</td>
+    <td>补 <code>@deepseek-ai/dsh-client-ui-settings</code>；若走 React 路线还需 <code>@deepseek-ai/dsh-client-ui-primitives</code>。</td>
+  </tr>
+  <tr>
+    <td><code>scope.dispose?.()</code></td>
+    <td><code>settings.register()</code> 返回的 scope 只有 <code>get / watch / update / replace</code>，没有 <code>dispose</code>。这行是死代码（回收靠 fiber effect，不算错）。</td>
+    <td>删掉，或改为显式说明依赖 fiber 生命周期。</td>
+  </tr>
+  <tr>
+    <td>vendor 快照 <code>package.json</code></td>
+    <td>仍带 <code>scripts: { build: "tsc", test: ... }</code>。当前无 <code>prepare</code> 所以不致命；一旦将来加 <code>prepare</code>，<code>pnpm install</code> 会在快照里跑 <code>tsc</code>，而快照没有 <code>tsconfig.json</code> 和 <code>src/</code>，直接失败（conformance §14.2.1）。</td>
+    <td>部署脚本自动剥离 <code>scripts</code> 与 <code>devDependencies</code>。<code>DEPLOY.md</code> 里写了这段脚本，但显然没执行。</td>
+  </tr>
+  <tr>
+    <td>vendor 快照内容</td>
+    <td>带进了 <code>.archive/</code>（round1-11 的 30 个文件）、<code>_strip-*.mjs</code>、<code>_archive-old-src.mjs</code>、<code>PLAN.round1-11.archive.md</code>。</td>
+    <td>部署时按 <code>files</code> 白名单拷贝，或补一份 <code>.npmignore</code>。</td>
+  </tr>
+  <tr>
+    <td>客户端构建链</td>
+    <td><code>scripts/build-client.mjs</code> 是纯占位（三行 <code>console.log</code>）；<code>client/client.js</code> 是手写占位。"第 3 轮接真 React 构建链"从未发生。</td>
+    <td>见第 6 节路线。</td>
+  </tr>
+  <tr>
+    <td><code>DEPLOY.md</code></td>
+    <td>部署清单里<b>没有</b>"把插件加进 <code>dsh.profile.bundles</code>"这一步；6.3 节还写着"patch 已经由本项目的 cordis.patch.yml 提供"——这正是本次错误的来源。</td>
+    <td>补 bundles 步骤 + 把 <code>cordis.patch.yml</code> 改成 <code>insert</code> 形式。</td>
+  </tr>
+</table>
+
+<h2>5. 为什么 31 个测试全绿却什么都没测出来</h2>
+
+<p>项目自测 <b>31/31 通过</b>，但上面每一条 P0/P1 都逃过了：</p>
+
+<table>
+  <tr><th style="width:30%">测试</th><th>实际断言</th><th>漏掉了什么</th></tr>
+  <tr>
+    <td><code>tests/client-verify.mjs</code></td>
+    <td>字符串包含检查（<code>includes('return module.exports')</code>）+ vm 里跑一遍确认 factory 返回对象。</td>
+    <td>完全没有触碰 slot 渲染器。它证明了"文件能加载"，但"组件是 React 组件"这件事一个字都没测。</td>
+  </tr>
+  <tr>
+    <td><code>tests/routes-verify.mjs</code></td>
+    <td>用 <b>fake webServer</b> 收集 <code>register()</code> 的调用，检查 <code>(kind,path)</code> 不重复、handler 是函数。</td>
+    <td>fake 的 <code>register</code> 只 push 不匹配。所以 <code>:name</code> 能不能命中这条，测试结构上就不可能发现——真匹配器是宿主那个 <code>match(pathname)</code>。</td>
+  </tr>
+  <tr>
+    <td><code>scripts/dev-conformance-check.mjs</code></td>
+    <td>4 层 schema 校验（这个做得很好，用的是宿主真包）。</td>
+    <td>schema 之外的契约（挂载、路由匹配、React、approval）不在覆盖范围内。</td>
+  </tr>
+</table>
+
+<p>这是 conformance 技能 §13.1 说的<b>"mock 测试 ≠ 验证"</b>：内联重写一遍实现逻辑的测试，验证的是"我以为的行为"，不是"真实代码的行为"。修的方向不是加断言数量，而是<b>把边界换成真实对象</b>：</p>
+
+<pre><code><span class="cm">// routes：用宿主的真匹配器，而不是自己 push</span>
+<span class="kw">import</span> { match } <span class="kw">from</span> <span class="str">'@deepseek-ai/dsh-host-webserver'</span>  <span class="cm">// 或实例化真 Router</span>
+assert(match(<span class="str">'/plugins/npm-manager/packages/typescript'</span>) !== <span class="kw">undefined</span>)
+
+<span class="cm">// client：把注册进来的 Component 真的交给 React 渲染一次</span>
+renderToString(React.createElement(entry.component, { t: k =&gt; k }))</code></pre>
+
+<h2>6. 修复清单（按依赖顺序）</h2>
+
+<div class="card">
+  <h4>第 1 步 — 让它先能被挂载（5 分钟，改 2 个文件）</h4>
+  <ol>
+    <li><b>插件自己的 <code>cordis.patch.yml</code></b>：改成 <code>- insert: [{ id: npm-manager, name: dsh-plugin-npm-manager, config: {...} }]</code>。</li>
+    <li><b><code>~/.dsh/profiles/web/package.json</code></b>：把 <code>dsh-plugin-npm-manager</code> 加进 <code>dsh.profile.bundles</code>（与 email-assistant 并列）。</li>
+    <li><b><code>~/.dsh/profiles/web/cordis.patch.yml</code></b>：要么删掉那段无效的 <code>- id: npm-manager</code>（由第 1 步的 bundle patch 接管），要么就地改成 <code>- insert:</code> 形式。</li>
+    <li>验证：<code>dsh --profile web --dump-config | grep -A3 npm-manager</code> 应能命中。</li>
+  </ol>
+  <p style="margin-top:12px"><b>只做这一步的结果</b>：服务端 4 个工具、5 条路由会活过来（agent 对话里可以调 <code>npm_list_packages</code>），但 <b>设置页仍然是空的</b>——因为 P0-2。</p>
+</div>
+
+<div class="card">
+  <h4>第 2 步 — 让面板真的渲染（半天）</h4>
+  <ol>
+    <li>建 <code>client/src/index.tsx</code>，写真正的 React 组件（卡片 + 包列表 + 刷新按钮），通过 <code>fetch('/plugins/npm-manager/packages')</code> 打后端。</li>
+    <li>用 <code>tsdown</code> / <code>rolldown</code> 打包成单文件 <code>client/client.js</code>（照抄 dshmarket 的 <code>build:client</code> 链路）。</li>
+    <li><code>package.json</code> 补 <code>dsh.client.inject</code>：<code>["@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-ui-settings"]</code>。</li>
+    <li>字典改走 <code>ctx.locale.register(NS, { zh, en })</code>，注册条目里写 <code>locale: NS</code>（字符串）。</li>
+    <li>组件必须是 <code>React.createElement(...)</code> 或 JSX 编译产物，绝不能返回普通对象。</li>
+  </ol>
+</div>
+
+<div class="card">
+  <h4>第 3 步 — 补齐功能正确性</h4>
+  <ol>
+    <li>approval 改走 <code>ctx.on('tools/pre-execute')</code> + <code>ctx.userQuestions.ask()</code>（P1-1）。</li>
+    <li>路由 #2 改 <code>kind: 'prefix'</code>（P1-2）。</li>
+    <li><code>inject</code> 里的 <code>settings</code> 换成 <code>ctx.inject(['settings'], cb)</code>（P1-3）。</li>
+    <li>测试从"字符串/fake 断言"升级为"真实匹配器 + 真实 React 渲染"（第 5 节）。</li>
+    <li>更新 <code>DEPLOY.md</code>：补 bundles 步骤，删掉"patch 已由本项目提供"的错误说法。</li>
+  </ol>
+</div>
+
+<h2>7. 一句话总结</h2>
+
+<div class="lead" style="border-left-color:var(--red)">
+  面板不显示，<b>第一因是部署配置错了</b>（插件从未进入配置树，只留一条 warn），
+  <b>第二因是客户端面板的写法从根上不符合 DSH 的 slot 契约</b>（不是 React 组件 + locale 传对象）。
+  前者 5 分钟可修，后者需要把 <code>build-client.mjs</code> 那条从未落地的 React 构建链真正做出来。
+  现有 31 个测试全绿，但它们没有一条覆盖到这两处。
+</div>
+
+<div class="foot">
+  证据文件：<code>~/.dsh/profiles/web/package.json</code> · <code>~/.dsh/profiles/web/cordis.patch.yml</code> ·
+  <code>@deepseek-ai/dsh-app-boot/lib/index.js:59</code> · <code>@deepseek-ai/dsh-client-modules/lib/index.js</code> ·
+  <code>@deepseek-ai/dsh-client-ui-renderer/lib/client.js:602,652</code> ·
+  <code>@deepseek-ai/dsh-host-webserver/lib/index.js:176,322</code> ·
+  <code>@deepseek-ai/dsh-tools/lib/types/index.d.ts:261</code> · <code>dshmarket/lib/settings.js</code>
+</div>
+
+</div>
+</body>
+</html>
