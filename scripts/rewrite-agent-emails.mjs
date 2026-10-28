@@ -1,12 +1,16 @@
 /**
- * 改写提交历史里的作者/提交者邮箱（local part），保留姓名、日期、消息、树结构。
+ * 改写提交历史里的作者/提交者邮箱（local part），并清理 AI 归属尾行。
  *
- * 背景：DSH 工作空间给各 Agent 分配形如 `<name>@agent.local` 的虚拟邮箱。
+ * 背景一：DSH 工作空间给各 Agent 分配形如 `<name>@agent.local` 的虚拟邮箱。
  * GitHub 归属提交时，除「已验证邮箱」外还有一条路径：**邮箱 `@` 前缀若与某个
  * 账号的登录名相同，就直接归属到该账号**（不看域名）。于是 `claude@agent.local`
  * 会被算作 Anthropic 官方账号 `claude` 的贡献，页面上冒出 Claude 头像。
+ * 本脚本把 local part 换成 `yjh-agent-<name>` 这类不会撞真实账号的形式。
  *
- * 本脚本把 local part 换成 `dsh-agent-<name>` 这类不会撞真实账号的形式。
+ * 背景二：提交消息正文里的 `Co-Authored-By: <某人> <邮箱>` 尾行会让 GitHub
+ * 在提交旁渲染**共创头像** —— 这与邮箱归属是**两条独立路径**，只改邮箱无效。
+ * 且按 [git-rule.md §1.3](rules/git-rule.md)，提交消息里不应出现 AI 归属尾行。
+ * 本脚本把这些尾行整行删除。
  *
  * 用法：node scripts/rewrite-agent-emails.mjs <repo-dir> [--dry]
  */
@@ -26,11 +30,19 @@ const git = (...args) =>
 
 /** local part → 新的 local part（保留 @agent.local 域名） */
 const RENAMES = {
-  claude: 'dsh-agent-claude',
-  deepseek: 'dsh-agent-deepseek',
-  antigravity: 'dsh-agent-antigravity',
-  mavis: 'dsh-agent-mavis',
-  workbuddy: 'dsh-agent-workbuddy',
+  claude: 'yjh-agent-claude',
+  deepseek: 'yjh-agent-deepseek',
+  codex: 'yjh-agent-codex',
+  antigravity: 'yjh-agent-antigravity',
+  mavis: 'yjh-agent-mavis',
+  workbuddy: 'yjh-agent-workbuddy',
+  // 已被 dsh-agent-* 改写过的，再统一到 yjh-agent-*
+  'dsh-agent-claude': 'yjh-agent-claude',
+  'dsh-agent-deepseek': 'yjh-agent-deepseek',
+  'dsh-agent-codex': 'yjh-agent-codex',
+  'dsh-agent-antigravity': 'yjh-agent-antigravity',
+  'dsh-agent-mavis': 'yjh-agent-mavis',
+  'dsh-agent-workbuddy': 'yjh-agent-workbuddy',
 }
 
 const rename = (email) => {
@@ -83,6 +95,22 @@ const rewriteHeader = (header) => {
   return `${p.name} <${rename(p.email)}> ${p.date}`
 }
 
+/**
+ * 删掉提交消息里的 AI 归属尾行。
+ *
+ * `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` 这类尾行会让
+ * GitHub 在提交旁渲染共创头像，与邮箱归属是两条独立路径。整行删除，
+ * 同时收掉尾部多余空行。
+ */
+const stripCoAuthorTrailers = (message) => {
+  const lines = message.split('\n')
+  const kept = lines.filter((l) => !/^\s*co-authored-by\s*:/i.test(l))
+  if (kept.length === lines.length) return { message, changed: false }
+  // 去掉被删行留下的尾部空行
+  while (kept.length && kept[kept.length - 1].trim() === '') kept.pop()
+  return { message: kept.join('\n') + '\n', changed: true }
+}
+
 const branches = git('for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads')
   .trim()
   .split('\n')
@@ -104,12 +132,20 @@ for (const line of branches) {
     const f = commitFields(sha)
     const newAuthor = rewriteHeader(f.author)
     const newCommitter = rewriteHeader(f.committer)
-    if (newAuthor === f.author && newCommitter === f.committer) {
+    const stripped = stripCoAuthorTrailers(f.message)
+    const newParents = f.parents.map((p) => map.get(p) ?? p)
+    // ⚠️ 父提交被改写时，**本提交也必须重建** —— 否则它的父指针仍指向旧提交，
+    //    新旧两条链会混在一起，HEAD 可能压根不在新链上（表现为「改写了但没生效」）。
+    const parentsChanged =
+      newParents.length !== f.parents.length ||
+      newParents.some((p, i) => p !== f.parents[i])
+    const contentChanged =
+      newAuthor !== f.author || newCommitter !== f.committer || stripped.changed
+    if (!contentChanged && !parentsChanged) {
       map.set(sha, sha)
       unchanged++
       continue
     }
-    const newParents = f.parents.map((p) => map.get(p) ?? p)
     const args = ['commit-tree', f.tree]
     for (const p of newParents) args.push('-p', p)
     // commit-tree 没有 --author 选项，作者与提交者都走环境变量
@@ -127,7 +163,7 @@ for (const line of branches) {
     const newSha = execFileSync('git', ['-C', repoDir, ...args], {
       encoding: 'utf8',
       env,
-      input: f.message,
+      input: stripped.message,
     }).trim()
     map.set(sha, newSha)
     rewritten++
