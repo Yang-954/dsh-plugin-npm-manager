@@ -55,8 +55,18 @@ function safeByteLength(value: unknown): number {
   try { return Buffer.byteLength(JSON.stringify(value), 'utf8') } catch { return 0 }
 }
 
+/**
+ * 环境变量表。
+ *
+ * ⚠️ 刻意**不用** `NodeJS.ProcessEnv`：那是个 Node 全局命名空间，
+ * 会让产出的 `.d.ts` 依赖消费者环境里存在 node 类型（严格模式下报
+ * `Cannot find namespace 'NodeJS'`）。用等价的结构化类型后，
+ * 声明文件自包含，任何消费方都能用。
+ */
+export type EnvTable = Record<string, string | undefined>
+
 /** 解析 DSH_HOME（与 dshmarket 的 home-paths 规则一致：支持 `~/` 前缀） */
-export function resolveDshHome(env: NodeJS.ProcessEnv = process.env, home = safeHomedir()): string {
+export function resolveDshHome(env: EnvTable = process.env, home = safeHomedir()): string {
   const raw = env.DSH_HOME
   if (typeof raw === 'string' && raw.trim() !== '') {
     const v = raw.trim()
