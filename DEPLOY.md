@@ -241,8 +241,8 @@ dsh web --profile web
 ⚠️ **不要在 vendor 里改源码** —— 那是运行副本。正确顺序是"改源码项目 → 构建 → 同步到 vendor"：
 
 ```bash
-# 1. 在源码项目里改（D:\yang\日常非项目活动\dsh-plugin-npm-manager）
-cd /d/yang/日常非项目活动/dsh-plugin-npm-manager
+# 1. 在源码项目里改（本仓库根目录）
+cd /path/to/dsh-plugin-npm-manager
 
 # 2. 构建两端
 npm run build          # src/*.ts → lib/

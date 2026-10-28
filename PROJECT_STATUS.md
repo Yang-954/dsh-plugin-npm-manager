@@ -1,14 +1,13 @@
 # PROJECT_STATUS.md — dsh-plugin-npm-manager
 
-> 最新沉淀状态（**2026-10-27，版本 0.8.0**）。给下一个接手的 Agent 一眼看清"做到哪、怎么验证、还差什么"。
+> 最新沉淀状态（**2026-10-27，版本 0.8.0**）。给下一个接手的开发者一眼看清"做到哪、怎么验证、还差什么"。
 >
 > ⚠️ 0.7.1 及以前的目标宿主是 DSH **0.1.5-rc.2**；0.8.0 已迁移到 **0.2.1-rc.3**。
-> 检查报告见 [CHECK_REPORT_2026-10-27.md](./CHECK_REPORT_2026-10-27.md)。
 
 ## 一句话现状
 
 **已适配 DSH 0.2.1 并全绿**：`npm test` 159 条断言零配置通过（含真实 0.2.1 宿主契约测试）。
-检查报告里的 P0（settings API 被删）与 7 条 P1 全部修完；插件**当前未部署**（用户尚未装回 profile）。
+0.7.1 → 0.8.0 迁移期的 P0（settings API 被删）与 7 条 P1 全部修完。
 
 ## 0.8.0：为什么必须迁移
 
@@ -66,8 +65,6 @@ tests/
   routes-verify.mjs        25 断言（宿主**真实** register/match + 流式帧 + CSRF）
   client-verify.mjs        22 断言（React 元素契约 + 模块 id + section + 加载态）
   host-contract-021.mjs    ⭐ 10 断言（真实 0.2.1 契约）
-_diag/
-  browser-check.mjs / cache-check.mjs / loading-check.mjs / measure-scan.mjs
 ```
 
 ## 如何验证
@@ -104,14 +101,15 @@ grep 'not found' /tmp/w.txt         # 必须没有 npm-manager 那条
 ### 仍待办（改进类，不影响"能不能用"）
 
 1. **冷扫描首次仍要几十秒**（无磁盘缓存时）。已通过渐进显示 + 缓存缓解（热路径 194ms）；
-   真正的"第一次就快"需要批量接口或并发调优（本机吞吐次线性且测量噪声大）。
+   真正的"第一次就快"需要批量接口或并发调优（吞吐次线性且测量噪声大）。
 2. **`/settings` 的诊断探针**目前常驻（`serviceType` 探针仍每次请求执行一次）。
-3. **`registry.ts` 重试策略**：目前对 4xx 也重试一次、无退避、404 无负缓存
-   （检查报告 P2-7，尚未修）。
-4. **`scanner.ts` 依赖段未去重**：同包在 deps+peer 会出两行、计数重复
-   （检查报告 P2-8，尚未修）。
-5. **`disk-cache.ts` 固定 `.tmp` 名**：两个 dsh 实例共用 DSH_HOME 时后写者丢条目
-   （检查报告 P2-6，尚未修；单实例场景不受影响）。
+3. **`registry.ts` 重试策略**：目前对 4xx（404/401/403 等确定性失败）也重试一次、
+   无退避、404 无负缓存 —— 缺失的包每轮扫描固定打两次请求。尚未修。
+4. **`scanner.ts` 依赖段未去重**：同一个包同时出现在 `dependencies` 与
+   `peerDependencies` 会出两行，`totalCount` / `outdatedCount` 重复计数；
+   `peerDependencies` 未必安装却被当作已安装。尚未修。
+5. **`disk-cache.ts` 固定 `.tmp` 文件名 + 整文件覆盖**：两个 dsh 实例共用同一
+   `DSH_HOME` 时，后落盘者会丢掉先落盘者本次新增的条目（单实例场景不受影响）。尚未修。
 6. **项目发现的边界**：不跟随符号链接；跳过 `_` 前缀目录。
 7. **`vendor/` 里的 `node_modules` 备份**（若仍存在）：保留观察期后建议删除。删除前问一次。
 

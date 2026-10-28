@@ -3,6 +3,23 @@
   "version": "0.8.0",
   "type": "module",
   "description": "DSH plugin: list local/global npm packages in Settings → Plugins with version, description, outdated status, and upgrade actions.",
+  "license": "MIT",
+  "author": "Yang-954",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Yang-954/dsh-plugin-npm-manager.git"
+  },
+  "homepage": "https://github.com/Yang-954/dsh-plugin-npm-manager#readme",
+  "bugs": {
+    "url": "https://github.com/Yang-954/dsh-plugin-npm-manager/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "npm",
+    "package-manager",
+    "deepseek-harness"
+  ],
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
   "exports": {
@@ -49,7 +66,10 @@
     "cordis.patch.yml",
     "README.md",
     "CHANGELOG.md",
-    "PLUGIN_DEV_GUIDE.md"
+    "DEPLOY.md",
+    "PLUGIN_DEV_GUIDE.md",
+    "PROJECT_STATUS.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc",

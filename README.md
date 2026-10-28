@@ -1,5 +1,8 @@
 # dsh-plugin-npm-manager
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![DSH](https://img.shields.io/badge/DSH-%3E%3D0.2.1-blue.svg)](https://github.com/deepseek-ai/deepseek-harness)
+
 > DeepSeek Harness (DSH) 插件:列出本地/全局 npm 包,在 **DSH Settings → 插件** 面板里直接看(版本、描述、过期状态、升级)。
 >
 > **架构**：4 件套函数插件 + 6 条 webServer 路由 + settings 面板（独立标签页）+ 手写 React 客户端。
@@ -39,8 +42,8 @@
 
 ## 开发者视角（看代码）
 
-- `PLAN.md` — 架构设计 + DSH 准则映射
 - `PLUGIN_DEV_GUIDE.md` — 完整开发技能书（怎么基于本项目写新插件）
+- `PROJECT_STATUS.md` — 当前状态、目录结构、还差什么
 - `cordis.patch.yml` — DSH Loader 加载时 apply 的 patch（**随包发布，必须进 git**）
 - `src/` — 服务端 TS 源码，按 §8 结构分层
 - `client/client.js` — Settings 面板的客户端产物（手写 `React.createElement`）
@@ -78,7 +81,28 @@ node tests/host-contract-021.mjs     # 真实 0.2.1 契约（10）
 
 ## 部署（用户本机）
 
-见 [DEPLOY.md](./DEPLOY.md)。
+完整步骤见 [DEPLOY.md](./DEPLOY.md)。最小安装：
+
+```bash
+# 1. 装到 DSH profile（DSH_PROFILE 按你的实际 profile 目录）
+cd ~/.dsh/profiles/desktop
+pnpm add "dsh-plugin-npm-manager@github:Yang-954/dsh-plugin-npm-manager"
+
+# 2. 在 profile 的 package.json 里登记 bundle
+#    dsh.profile.bundles 追加 "dsh-plugin-npm-manager"
+#    dependencies 追加 "dsh-plugin-npm-manager": "github:Yang-954/dsh-plugin-npm-manager"
+
+# 3. 重启 DSH，插件会在「设置 → 左侧导航 → NPM 管理器」出现
+```
+
+> 插件通过 `dsh.profile.bundles` + 随包的 `cordis.patch.yml` 挂载；
+> 缺少 bundle 登记时 Loader 只会打印一条 `entry "npm-manager" not found` 的告警并丢弃该条目。
+
+---
+
+## 许可
+
+[MIT](./LICENSE) — Copyright (c) 2026 凡尘相守 (Yang-954)
 
 ---
 
