@@ -72,7 +72,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
+    "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc",
     "build:client": "node scripts/build-client.mjs",
     "test": "node scripts/build-client.mjs && node tests/tool-schema-verify.mjs && node tests/routes-verify.mjs && node tests/client-verify.mjs && node scripts/dev-conformance-check.mjs && node tests/host-contract-021.mjs"
   },
