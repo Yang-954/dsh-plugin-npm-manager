@@ -4,6 +4,128 @@
 
 ---
 
+## [0.8.0] - 2026-10-27 (适配 DSH 0.2.1：settings 契约迁移 + 升级链路修复)
+
+> 起点：全面检查发现 0.7.1 在 **DSH 0.2.1-rc.3** 上根本装不起来
+> （`ctx.settings.register` 已被删除），且 Windows 升级链路必然失败。
+> 本版把宿主契约从 0.1.5-rc.2 迁到 0.2.1，并修掉检查报告里的 P0/P1。
+
+### Breaking
+
+- **`engines.dsh` 提升到 `>=0.2.1-rc.3`**：旧宿主没有 `settings.configure/describe/update`。
+- **所有可写配置字段加 `.volatile()`**：0.2.1 的 `update()` 只接受 volatile 字段，
+  否则抛 `Plugin entry "..." has no volatile fields`。
+- **`updateType` 新增 `'unknown'`**：`workspace:*` / `*` / `file:` / `link:` 这类
+  不可比声明不再被硬判成 `major`（前端徽章显示「不可比」）。
+
+### Fixed
+
+- **⭐ P0：settings 面板改用 0.2.1 API**（`src/web/settings.ts`）
+  - 旧：`ctx.settings.register(ns, Config, { base })` + `scope.watch()` —— 两者都已删除
+  - 新：`configure({ auto: false }, ctx.fiber)` + `describe()` 取 revision +
+    `update(entryId, patch, revision)` 做乐观并发
+  - 命名空间改为 **profile entry id**（`ctx.fiber.entry.options.id`），不再是插件自起的名字
+  - 面板挂在 `ctx.inject(['settings'], ...)` 子作用域 → 缺该服务的宿主自动降级
+- **⭐ volatile 引用解引用**（`src/config.ts` / `src/services/state.ts`）
+  - 0.2.1 里 `.volatile()` 字段解析后是 `{ get() }` 引用，不是裸值
+  - 新增 `readConfigValue()` 与 `State.cfg()`；全类统一走它，
+    避免 `scope === 'system'` 这类比较静默失效
+- **⭐ 配置热生效机制换了**（`State.syncConfig`）
+  - 旧：`scope.watch(next => updateConfig(next))`
+  - 新：loader 用 `updateVolatile` **原地**写引用、不重启插件 →
+    每次读取前对比快照，变了才按影响面失效
+- **⭐ Windows 上 npm 调用**（新增 `src/services/npm-cli.ts`）
+  - 旧：`spawn('npm', ...)` → 实测 `ENOENT`，两个升级工具 100% 不可用
+  - 新：win32 用 `npm.cmd` + `shell: true`；**同时**加包名白名单
+    （`shell` 打开注入面，两个措施必须成对）；`timeout` 后 SIGKILL 兜底
+- **⭐ `scope=global` 参数拼接**（`apply-upgrade.ts`）
+  - 旧：`['-g', ...packages]` 再统一拼 `@latest` → `-g@latest`，全局升级必失败
+  - 新：`flags` 与包名分开传（`--global`）；global 不再用项目 package.json 哈希判改动
+- **⭐ GitHub token 跨源泄露**（`registry.ts`）
+  - 旧：`fetchJson`（只用于 registry.npmjs.org）也加了 `Authorization: Bearer`
+  - 新：只在 `api.github.com` / `raw.githubusercontent.com` 分支注入
+- **⭐ `/settings` 回显凭据**（`routes.ts`）
+  - 旧：直接 dump `state.config` → `githubToken` 明文进响应
+  - 新：`redactConfigForClient()` 只下发白名单字段；`githubToken` 加 `.role('secret')`
+- **⭐ 写接口 CSRF / 类型校验**（`routes.ts`）
+  - 新增同源校验（`Sec-Fetch-Site` / `Origin` vs `Host`）→ 403
+  - 强制 `Content-Type: application/json` → 415
+  - 请求体 >64KB → 413；预解析 `req.body` 分支不再绕过体积上限
+- **⭐ 客户端两份 `draftState`**（`client/src/index.js`）
+  - 旧：自定义路径（string）与配置表单（object）用同名 `var` 互相覆盖
+    → 点「应用」报 `draft.trim is not a function`
+  - 新：拆成 `draft`（路径）与 `cfgDraft`（配置）
+- **⭐ SSE error 帧被吞**（`client/src/index.js`）
+  - 旧：`try { applyEvent(JSON.parse(...)) } catch` 把 error 帧当坏帧丢掉
+    → 界面永远停在 streaming
+  - 新：`try` 只包 `JSON.parse`，`applyEvent` 移到外面
+- **SSE 断连不再空转**（`routes.ts` + `state.ts`）
+  - 监听 `req` 的 `close`/`aborted`，断开即停止；worker 检查缓存代数提前收工
+- **磁盘缓存 TTL 语义**（`registry.ts`）
+  - 旧：`disk.set(key, value, diskTtlMs)` 忽略本次 TTL
+    → 10 分钟的 changelog 负缓存被落盘 24 小时
+  - 新：取 `min(ttlMs, diskTtlMs)`
+- **磁盘缓存损坏后永久禁用**（`disk-cache.ts`）
+  - 旧：parse 失败即 `disabled = true` 且不删坏文件，`clear()` 也不复位 → 重启再坏一次
+  - 新：解析错误删文件并禁用；IO 类错误（EBUSY/EPERM）不禁用；`clear()` 复位
+- **非流式路径无并发上限**（`state.ts`）
+  - 旧：`Promise.all(installed.map(...))` 一次打 220~300 个请求
+  - 新：复用 `RESOLVE_CONCURRENCY` 池（16）
+- **失效竞态**（`state.ts`）
+  - 新增 `cacheGeneration`：扫描中途点「刷新缓存」后，在途结果不再写回并盖新时间戳
+- **失败项不再静默消失**（`state.ts`）
+  - 新增 `failedCount`：404/超时/限流的包如实报出去
+- **`projectPath` 不再任意放行**（`state.ts`）
+  - 只接受绝对路径 + 已存在 + 目录下**有 package.json**；`system` 范围直接忽略该参数
+- **`State.dispose()` 不再是死代码**（`index.ts`）
+  - 清理链末尾调用它，热卸载不再丢 debounce 窗口内的落盘
+- **`ctx.inject(['workspaceRegistry'])` 可撤销**（`index.ts`）
+  - 用 `effect` 包住，卸载时把 provider 还原（旧闭包会指向已销毁的 sctx）
+- **`npm_get_package_info` 返回 null 会被 0.2.1 判 `ToolOutputError`**
+  - 改为结构化 `found: false`；未传 version 时**真的**从 node_modules 推断
+- **`npm_preview_upgrade` 把 exit 1 当成功**
+  - 判据改为「stdout 能解析出 JSON」；网络错误不再被误报成「无变化」
+- **`packages` 参数未标 required** → 补 `required` + 运行时非空守卫
+- **User-Agent 硬编码 `0.6.0`** → 从 `package.json` 读版本
+
+### Changed
+
+- `inject` 模块级声明去掉 `settings`（改由 `ctx.inject` 子作用域做降级边界，
+  否则缺该服务的宿主会永久 pending）
+- 路由数文档修正：**6 条**（README 原写 5 条）
+- `.gitignore` 的 `*.patch.yml` 改为只忽略验证 overlay ——
+  旧规则把 **`cordis.patch.yml` 也忽略了**（该文件未进 git，换机器 clone 直接缺）
+- 新增 `.npmignore` + `files` 取反规则：tarball 不再包含 35 个 `.patched.*` 临时产物
+- 删除死文件 `src/types.ts`（文件头自己承认「没有被任何活跃代码 import」）
+
+### Tests
+
+- **`npm test` 零配置全绿**：159 条断言（79 + 25 + 22 + 23 + 10）
+- **测试不再写死 `profiles/web`**（`scripts/patch-src.mjs`、`tests/routes-verify.mjs`）
+  - 旧：写死 `C:/Users/Admin/.dsh/profiles/web/...`，而该目录自 10-17 起为空
+    → `npm test` 跑到第 2 段就 `ERR_MODULE_NOT_FOUND`，看起来像真失败
+  - 新：按 `DSH_HOME` 探测所有 profile，并**优先选 dsh-tools >= 0.2 的宿主**
+- **新增 `scripts/extract-core-from-asar.mjs`**：从桌面版 `app.asar` 解包核心包
+  （本机宿主核心在 asar 里，profile 的 node_modules 里没有），按版本缓存
+- **新增 `tests/host-contract-021.mjs`**：用**真实 0.2.1 源码**验证
+  settings 无 `register`、`apply` 不抛、4 工具 + 6 路由、volatile 引用、
+  `update(entryId, patch, revision)` 三参数、响应无 token、CSRF/类型校验
+- **修掉 mock 假绿**：`routes-verify` 原先 mock 了 0.2.1 已删除的 `settings.register`，
+  正好掩盖 P0 —— 现按真实方法面建模并真的调用 `ctx.inject` 回调
+- **修掉 `.d.ts` 被当源码加载**：`src/types/shims.d.ts` 被 walk 复制后 strip-types 崩
+- **修掉 3 个「假挂起」用例**：`AbortSignal.timeout` 的 timer 是 unref 的，
+  测试里没有别的活跃句柄时 Node 判定事件循环空转直接退出 → 加 keepalive
+
+### Verified
+
+- `tsc --noEmit` → 0 error（strict / noUnusedLocals 全开）
+- `npm test` → 159 通过 / 0 失败
+- 真实宿主契约测试（DSH 0.2.1-rc.3 解包）→ 10 通过 / 0 失败
+- Windows 实测：`npm --version` → `11.17.0`（旧版 ENOENT）；
+  `--global` + `--dry-run` 正确返回 JSON；注入尝试全部被白名单拦下
+
+---
+
 ## [0.7.1] - 2026-09-21 (三件收尾：磁盘缓存热切换 + 移除 46MB 死仓库 + 测试自给自足)
 
 ### Fixed

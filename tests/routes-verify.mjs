@@ -11,7 +11,7 @@
  */
 
 import path from 'node:path'
-import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { homedir, tmpdir } from 'node:os'
 import { buildPatchedSrc } from '../scripts/patch-src.mjs'
@@ -43,11 +43,19 @@ const { dirUrl } = buildPatchedSrc('routes')
 
 /* ── 解析宿主真包 ─────────────────────────────────────────────── */
 
-const DSH_HOME = process.env.DSH_HOME || path.join(homedir(), '.dsh')
-const WS_CANDIDATES = [
-  path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh-host-webserver', 'lib', 'index.js'),
-  path.join(DSH_HOME, 'profiles', 'web', 'node_modules', '@deepseek-ai', 'dsh-host-webserver', 'lib', 'index.js'),
-]
+// ⚠️ 别再把 profile 名写死成 `web`：本机 `profiles/web` 自 2026-10-17 起是空目录，
+//    活跃 profile 是 `desktop`。写死的结果是整段测试 ERR_MODULE_NOT_FOUND 崩溃。
+const WS_CANDIDATES = [path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh-host-webserver', 'lib', 'index.js')]
+{
+  const dshHome = process.env.DSH_HOME || path.join(homedir(), '.dsh')
+  try {
+    for (const name of readdirSync(path.join(dshHome, 'profiles'))) {
+      WS_CANDIDATES.push(path.join(dshHome, 'profiles', name, 'node_modules', '@deepseek-ai', 'dsh-host-webserver', 'lib', 'index.js'))
+    }
+  } catch {
+    /* 没有 profiles 就只试项目自身 */
+  }
+}
 let wsEntry = null
 for (const c of WS_CANDIDATES) {
   if (existsSync(c)) { wsEntry = c; break }
@@ -93,6 +101,26 @@ const Config = cfgMod.Config
 /** apply() 注册的全部路由（用宿主真实实现） */
 const settingsWrites = []
 
+/**
+ * 0.2.1 的 settings 服务面（**真实形状**，不是 0.1.x 的 register）。
+ *
+ * ⚠️ 旧版这里 mock 了 `settings.register(...)` —— 一个 0.2.1 已经删掉的 API。
+ * 于是 P0（真实宿主上 apply 抛 TypeError）在测试里完全看不出来，全绿。
+ * 现在按 0.2.1 实际方法面建模：configure / describe / update。
+ */
+const fakeSettings = {
+  configure: () => {},
+  describe: () => [{ ns: 'npm-manager', revision: 0, schema: {}, value: {} }],
+  update: (ns, patch, revision) => {
+    if (typeof ns !== 'string' || ns === '') return Promise.reject(new Error('update 缺少 entryId'))
+    if (patch && typeof patch.scope === 'string' && !['project', 'global', 'system'].includes(patch.scope)) {
+      return Promise.reject(new Error('scope 非法: ' + patch.scope))
+    }
+    settingsWrites.push({ ns, patch, revision })
+    return Promise.resolve()
+  },
+}
+
 const fakeCtx = {
   logger: { info() {}, warn() {}, error() {} },
   tools: {
@@ -102,23 +130,18 @@ const fakeCtx = {
   // apply() 会注册 tools/pre-execute 审批门 → fake ctx 必须提供 on()
   on: () => () => {},
   webServer,
-  settings: {
-    // apply() 会把返回的作用域交给 state 作为写入通道 → 必须提供 update()
-    register: () => ({
-      watch: () => {},
-      update: (patch) => {
-        if (patch && typeof patch.scope === 'string' && !['project', 'global', 'system'].includes(patch.scope)) {
-          return Promise.reject(new Error('scope 非法: ' + patch.scope))
-        }
-        settingsWrites.push(patch)
-        return Promise.resolve()
-      },
-      dispose: () => {},
-    }),
-  },
+  settings: fakeSettings,
+  // settings 面板走 ctx.inject(['settings'], cb)，这里**真的调用回调**，
+  // 才能覆盖「面板装好 → state 可写」这条路径（旧版靠 mock register 绕过）
   effect: (fn) => { fn(); return () => {} },
-  // 刻意不调用回调 —— 模拟宿主没有 workspaceRegistry 服务（降级路径）
-  inject: (_deps, _cb) => {},
+  inject: (deps, cb) => {
+    if (Array.isArray(deps) && deps.includes('settings')) {
+      const child = { ...fakeCtx, settings: fakeSettings, fiber: undefined }
+      return cb(child)
+    }
+    // 刻意不调用其它回调 —— 模拟宿主没有 workspaceRegistry 服务（降级路径）
+    return undefined
+  },
 }
 
 console.log('=== 注册（用宿主真实 register）===\n')
@@ -179,13 +202,17 @@ await test('无关路径不命中任何插件路由（交给 fallback）', () =>
 
 console.log('\n=== handler 行为 ===\n')
 
-async function callHandler(pathname, method = 'GET', search = '', body) {
+async function callHandler(pathname, method = 'GET', search = '', body, headers) {
   const r = match(pathname)
   if (!r) throw new Error('路由未命中: ' + pathname)
   let respBody = ''
   const frames = []
   let status = 200
   const req = { method, url: pathname + search }
+  // 真实浏览器发 POST 一定带 Content-Type；写接口现在强制校验它（CSRF 防护），
+  // 所以测试也要模拟真实请求头，否则测到的是「没头 → 415」而不是业务逻辑。
+  if (method === 'POST') req.headers = { 'content-type': 'application/json', ...(headers ?? {}) }
+  else if (headers !== undefined) req.headers = headers
   if (body !== undefined) req.body = body // readJsonBody 支持预解析形态（单测用）
   const res = {
     setHeader() {},
@@ -338,7 +365,9 @@ await test('⭐ POST /settings 写入合法配置', async () => {
   if (j.ok !== true) throw new Error('ok 不为 true: ' + body)
   if (settingsWrites.length !== before + 1) throw new Error('补丁未到达 settings 服务')
   const w = settingsWrites[settingsWrites.length - 1]
-  if (w.scope !== 'system' || w.requestTimeoutMs !== 20000) throw new Error('透传内容不对: ' + JSON.stringify(w))
+  // 0.2.1 的签名是 update(ns, patch, revision)：参数在 w.patch 里，不是扁平结构
+  if (w.ns !== 'npm-manager') throw new Error('entryId 不对: ' + JSON.stringify(w))
+  if (w.patch.scope !== 'system' || w.patch.requestTimeoutMs !== 20000) throw new Error('透传内容不对: ' + JSON.stringify(w))
 })
 
 await test('⭐ POST /settings 拒绝白名单外的字段（400）', async () => {
@@ -358,7 +387,9 @@ await test('POST /settings 回传 schema 校验错误（400）', async () => {
   })
   if (status !== 400) throw new Error('期望 400，实际 ' + status)
   const j = JSON.parse(body)
-  if (j.ok !== false || !/非法/.test(j.error || '')) throw new Error('应回传原始错误: ' + body)
+  // 现在**先**走本地 Config schema 校验（0.2.1 的 update 只校验类型/枚举，范围要靠 schema），
+  // 所以错误来自 schemastery 的 ValidationError，而不是 fake settings 的「scope 非法」
+  if (j.ok !== false || !/scope|非法/.test(j.error || '')) throw new Error('应回传校验错误: ' + body)
 })
 
 await test('POST /settings 拒绝非对象请求体（400）', async () => {

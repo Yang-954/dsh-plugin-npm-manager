@@ -35,6 +35,8 @@ export interface PackageListResult {
     cached?: boolean;
     /** 这份数据实际扫描完成的时间戳（缓存命中时是原始扫描时间） */
     scannedAt?: number;
+    /** 解析失败（404/超时/限流）的包数 —— 数据不完整时如实报出去 */
+    failedCount?: number;
 }
 /**
  * 流式扫描事件（NDJSON / SSE 逐条推给前端）。
@@ -85,6 +87,13 @@ export declare class State {
     private injectProbe;
     /** settings 作用域（由 installSettingsPanel 注入）；null = 只读 */
     private settingsScope;
+    /**
+     * settings 文档的当前 revision（0.2.1 乐观并发用）。
+     *
+     * `describe()` 返回它；`update(ns, patch, revision)` 要求传回。传错会抛
+     * `SETTINGS_CONFLICT`，从而避免两个标签页互相覆盖。
+     */
+    settingsRevision: number | undefined;
     /** listProjects() 的缓存（发现过程要遍历目录树） */
     private projectCache;
     /**
@@ -95,7 +104,25 @@ export declare class State {
      * 直到显式「刷新缓存」或 TTL 到期。
      */
     private listCache;
+    /** 上次看到的配置值快照（用于检测 0.2.1 volatile 引用的原地更新） */
+    private lastConfigSnapshot;
+    /**
+     * 缓存代数。
+     *
+     * 每次 {@link invalidate}（刷新按钮 / 配置变更）就 +1。扫描开始时记下当时的代数，
+     * 结束前比对：不一致说明「扫描期间有人清了缓存」，这份结果不能再写回
+     * （否则旧数据会被盖上新的 scannedAt 混进缓存）。
+     */
+    private cacheGeneration;
     constructor(config: any, opts: StateOptions);
+    /**
+     * 读一项配置的**当前值**。
+     *
+     * ⚠️ 0.2.1 里标了 `.volatile()` 的字段是 `{ get() }` 引用，不是普通值。
+     * 全类统一走这里，不要写 `this.config.x` —— 那拿到的是引用对象，
+     * 会让 `scope === 'system'` 之类的比较全部失效（且不报错，最阴的一种）。
+     */
+    private cfg;
     /**
      * 按当前 config 造一块磁盘缓存。
      *
@@ -103,8 +130,13 @@ export declare class State {
      * 绝不让缓存问题影响插件主流程。
      */
     private createDiskCache;
-    /** 注入 DSH 工作区列表（服务缺失时不调用 → 自动降级） */
-    setWorkspaceProvider(fn: () => ProjectRef[]): void;
+    /**
+     * 注入 DSH 工作区列表（服务缺失时不调用 → 自动降级）。
+     *
+     * 传 `null` 表示撤销（热重载时 effect 清理会调它）—— 不撤销的话
+     * 旧闭包会一直指向已销毁的 sctx，重载后「全系统」范围会静默变空。
+     */
+    setWorkspaceProvider(fn: (() => ProjectRef[]) | null): void;
     /** 是否已拿到 workspaceRegistry（诊断用） */
     hasWorkspaceProvider(): boolean;
     /** 诊断探针：调用时直接看宿主 ctx 上有没有 workspaceRegistry */
@@ -122,17 +154,36 @@ export declare class State {
     /** 配置是否可在面板里编辑（诊断用） */
     get settingsWritable(): boolean;
     /**
-     * 应用一组配置改动。
+     * 应用一组配置改动（0.2.1 契约）。
      *
      * - 只接受 {@link WRITABLE_SETTING_KEYS} 白名单内的 key（凭据类字段永远不可写）
-     * - 值的合法性交给 settings 服务校验（`scope.update` 内部会按 schema resolve，
-     *   非法值抛错 → 原样回给调用方，不会写坏文档）
-     * - 写入成功后 `scope.watch` 会触发 {@link updateConfig} → 缓存作废，热生效
+     * - 值先由 schema 校验（{@link Config} 上的 min/max 是**服务端**约束，
+     *   不只是前端渲染提示 —— 0.1.5 时代这里没有范围校验，能写进 0）
+     * - 再走 `settings.update(ns, patch, revision)`：0.2.1 用 revision 做乐观并发，
+     *   过期 revision 抛 `SETTINGS_CONFLICT`，避免两个标签页互相覆盖
+     *
+     * 写入成功后 volatile 引用会被 loader 原地更新，下次 {@link cfg} 读到的就是新值；
+     * {@link syncConfig} 负责据此作废缓存（热生效，不重启）。
      */
     applySettingsPatch(patch: Record<string, unknown>): Promise<{
         ok: boolean;
         error?: string;
     }>;
+    /** 当前配置的值快照（解引用后；用于比较与下发，**不要**拿它当长期配置） */
+    configValues(): Record<string, any>;
+    /**
+     * 检测 volatile 引用是否被改了，并按影响面作废缓存。
+     *
+     * 0.2.1 删掉了 `scope.watch`，改配置时 loader 直接把新值写进 volatile 引用
+     * （`updateVolatile`），**不重启插件**。所以这里在每次读取前对比一次快照：
+     * 变了就按影响面失效 —— 改「扫描深度」不该清 registry 缓存（否则要重拉 60 秒）。
+     */
+    syncConfig(): boolean;
+    /**
+     * 兼容旧调用点（settings 面板装好后会先调一次）。
+     * 现在没有 `watch` 了，等价于「强制同步一次」。
+     */
+    updateConfig(_next?: any): void;
     /** 诊断快照 */
     probeSnapshot(): {
         serviceType: string | null;
@@ -143,17 +194,6 @@ export declare class State {
     };
     /** 最近一次 workspaceProvider 抛出的错误（诊断用；正常为 null） */
     get lastWorkspaceError(): string | null;
-    /**
-     * settings 改了 → 更新 config 并**按影响面**失效缓存。
-     *
-     * ⚠️ 不能无脑调 {@link invalidate}：那会把 registry + 磁盘缓存一起清掉，
-     * 于是改个「项目扫描深度」也要重新拉 200+ 个包（实测约 60 秒）。
-     * 只有真正影响 registry 缓存的设置变化时才清它。
-     *
-     * 另外：`diskCache` / `diskCacheDir` / `diskCacheTtlMs` 变化时**热重建磁盘缓存** ——
-     * 否则界面上改完没反应，要重启才生效（之前就是这个坑）。
-     */
-    updateConfig(next: any): void;
     /**
      * 按当前 config 重建磁盘缓存并换给 registry 客户端。
      *
@@ -194,6 +234,18 @@ export declare class State {
     /** 计算某个 scope 要扫的项目列表（仅 system 范围非空） */
     private projectsFor;
     /** 归一化显式 project 参数 */
+    /**
+     * 归一化显式 project 参数。
+     *
+     * ⚠️ 旧版只 `trim()` 就放行 —— `?project=C:\任意目录` 能读任意目录的 package.json，
+     * 而且 `system` 范围下这个参数其实被忽略，却仍然参与缓存键，导致同一份系统数据
+     * 被不同字符串反复全量重扫、缓存键无界增长。
+     *
+     * 现在的约束：
+     * - 只接受**绝对路径**（相对路径在不同 cwd 下含义不同，缓存键会互相污染）
+     * - 必须是已存在的目录，且目录下有 `package.json`（否则扫出来必然是空，属于误用）
+     * - `system` 范围直接丢弃该参数（它本来就按「所有已知项目」扫）
+     */
     private explicitProject;
     /** 缓存键 */
     private keyOf;
@@ -220,7 +272,24 @@ export declare class State {
      * 需要真正刷新时调用 {@link invalidate}（「刷新缓存」按钮 / 配置变更）。
      */
     listPackages(scope?: string, projectPath?: string): Promise<PackageListResult>;
+    /**
+     * 用固定并发池解析全部包。
+     *
+     * @param generation 扫描开始时的缓存代数；与当前不一致时提前放弃剩余工作
+     */
+    private resolveAll;
     /** 单包详情(工具 #2 + 路由 GET /packages/:name 共用) */
     getPackageDetail(name: string, currentVersion: string): Promise<PackageDetailResult | null>;
+    /**
+     * 推断某个包在本机的已装版本。
+     *
+     * 优先级：项目 `node_modules/<pkg>/package.json` → 项目 `package.json` 里的声明
+     * （剥掉 range 前缀）→ 全局 `node_modules` → 都没有则返回 `undefined`。
+     *
+     * 存在意义：`npm_get_package_info` 的 `currentVersion` 是可选的，旧版声称
+     * 「自动从 node_modules 推断」但实际 default 成 `'0.0.0'` —— 于是任何包都
+     * 显示成「过期」，用户会被误导。
+     */
+    inferInstalledVersion(name: string): Promise<string | undefined>;
 }
 //# sourceMappingURL=state.d.ts.map

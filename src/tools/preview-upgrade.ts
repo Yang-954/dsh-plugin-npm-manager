@@ -4,10 +4,16 @@
  * 调用 `npm install --dry-run <pkg>@latest` 看会改什么
  * 不实际安装, 不修改 node_modules / package.json / package-lock.json
  * stderr 经过 sanitize(不泄露 token / 凭据)
+ *
+ * ## 0.2.1 适配
+ * - npm 调用改走 `services/npm-cli.ts`（Windows 上裸 `spawn('npm')` 必 ENOENT）
+ * - 包名过白名单（shell 与校验成对出现）
+ * - **exit code 1 不再无条件当成功**：npm 的 dry-run 在「有改动」时返回 1，
+ *   但网络错误/包不存在也常返回 1。现在要求 stdout 能解析出 JSON 才认，否则报错。
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { spawn } from 'node:child_process'
+import { runNpm, assertSafePackageSpec } from '../services/npm-cli.js'
 
 interface PreviewItem {
   name: string
@@ -34,37 +40,23 @@ function sanitizeNpmStderr(stderr: string, maxLen: number = 200): string {
   return cleaned.slice(0, maxLen) + (stderr.length > maxLen ? '...(truncated)' : '')
 }
 
-function runNpmDryRun(pkg: string, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<NpmDryRunOutput> {
-  return new Promise((resolve, reject) => {
-    let child: ReturnType<typeof spawn>
+async function runNpmDryRun(pkg: string, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<NpmDryRunOutput> {
+  const result = await runNpm(['install', '--dry-run', '--json', `${pkg}@latest`], { cwd, timeoutMs, signal })
+
+  if (result.killed) throw new Error(`npm dry-run 超时/被中止（${timeoutMs}ms）`)
+
+  // npm dry-run 在「有改动」时 exit 1；但网络错误 / 包不存在也常是 1。
+  // 判据不是 exit code，而是 **stdout 能不能解析出 JSON**。
+  const text = result.stdout.trim()
+  if (text !== '') {
     try {
-      child = spawn('npm', ['install', '--dry-run', '--json', `${pkg}@latest`], {
-        cwd,
-        timeout: timeoutMs,
-        signal,
-      })
-    } catch (e: any) {
-      reject(e as Error)
-      return
+      return JSON.parse(text) as NpmDryRunOutput
+    } catch {
+      /* 落到下面按失败处理 */
     }
-    let stdout = ''
-    let stderr = ''
-    child.stdout?.on('data', (d: any) => { stdout += d.toString('utf8') })
-    child.stderr?.on('data', (d: any) => { stderr += d.toString('utf8') })
-    child.on('close', (code: any) => {
-      if (code === 0 || code === 1) {  // npm dry-run exits 1 if there are changes
-        try {
-          resolve(JSON.parse(stdout) as NpmDryRunOutput)
-        } catch {
-          // stdout 可能是空(没变化) — 视为空结果
-          resolve({})
-        }
-      } else {
-        reject(new Error(`npm dry-run failed = ${code}, stderr=${sanitizeNpmStderr(stderr)}`))
-      }
-    })
-    child.on('error', reject)
-  })
+  }
+  if (result.code === 0) return {}  // 没改动：npm 输出空 stdout
+  throw new Error(`npm dry-run failed = ${result.code}, stderr=${sanitizeNpmStderr(result.stderr)}`)
 }
 
 export function registerPreviewUpgradeTool(ctx: any, state: any): () => void {
@@ -75,7 +67,8 @@ export function registerPreviewUpgradeTool(ctx: any, state: any): () => void {
       packages: {
         type: 'array',
         items: { type: 'string' },
-        description: '要预览升级的包名数组,如 ["cowsay","lodash"]',
+        required: true,
+        description: '要预览升级的包名数组,如 ["cowsay","lodash"]（至少一个）',
       },
     },
     output: {
@@ -104,14 +97,21 @@ export function registerPreviewUpgradeTool(ctx: any, state: any): () => void {
       render: (_args: any, value: any) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
     },
     async execute(args: any, exec: any) {
+      const rawPackages: unknown = args.packages
+      if (!Array.isArray(rawPackages) || rawPackages.length === 0) {
+        throw new Error('packages 必须是非空数组')
+      }
+      const packages = rawPackages.map((p: unknown) => assertSafePackageSpec(String(p)))
+
       const result: { packages: PreviewItem[]; totalWarnings: number; dryRun: boolean } = {
         packages: [],
         totalWarnings: 0,
         dryRun: true,
       }
-      for (const pkg of args.packages as string[]) {
+      const timeoutMs = state.cfg ? state.cfg('npmCommandTimeoutMs') : (state.config?.npmCommandTimeoutMs ?? 60_000)
+      for (const pkg of packages) {
         try {
-          const dryRun = await runNpmDryRun(pkg, state.cwd, state.config.npmCommandTimeoutMs, exec.signal)
+          const dryRun = await runNpmDryRun(pkg, state.cwd, timeoutMs, exec?.signal)
           const items: PreviewItem[] = [
             ...Object.entries(dryRun.added ?? {}).map(([name, info]) => ({
               name, current: '(not installed)', target: info.version ?? '?', willChange: true, warnings: dryRun.warnings ?? [],

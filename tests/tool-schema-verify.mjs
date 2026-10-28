@@ -51,7 +51,7 @@ const {
 const { detectUpdateType, RegistryClient } = registry
 const { State } = stateMod
 const Config = cfgMod.Config
-const { SETTINGS_FIELDS, WRITABLE_SETTING_KEYS } = cfgMod
+const { SETTINGS_FIELDS, WRITABLE_SETTING_KEYS, readConfigValue } = cfgMod
 
 const { join, relative } = path
 
@@ -71,10 +71,33 @@ console.log('=== 层 1: 配置与纯函数 ===\n')
 
 await test('Config(真 schemastery) parse({}) 给出全默认值', () => {
   const cfg = Config({})
-  if (cfg.scope !== 'project') throw new Error('scope 默认应为 project，实际 ' + cfg.scope)
-  if (cfg.registryCacheTtlMs !== 300_000) throw new Error('ttl 默认 300000')
-  if (cfg.enableChangelog !== true) throw new Error('enableChangelog 默认 true')
-  if (cfg.npmCommandTimeoutMs !== 60_000) throw new Error('timeout 默认 60000')
+  // ⚠️ 0.2.1：可写字段标了 .volatile()，解析后是 { get() } 引用而不是裸值。
+  // 读值必须走 readConfigValue —— 直接比较 `cfg.scope === 'project'` 永远为 false
+  // （`[object Object] !== 'project'`），而这正是旧代码会踩的坑。
+  const v = (k) => readConfigValue(cfg[k])
+  if (v('scope') !== 'project') throw new Error('scope 默认应为 project，实际 ' + v('scope'))
+  if (v('registryCacheTtlMs') !== 300_000) throw new Error('ttl 默认 300000')
+  if (v('enableChangelog') !== true) throw new Error('enableChangelog 默认 true')
+  if (v('npmCommandTimeoutMs') !== 60_000) throw new Error('timeout 默认 60000')
+})
+
+await test('Config 的可写字段都是 volatile 引用（0.2.1 settings 的前提）', () => {
+  const cfg = Config({})
+  for (const field of SETTINGS_FIELDS) {
+    const node = cfg[field.key]
+    if (node === null || typeof node !== 'object' || typeof node.get !== 'function') {
+      throw new Error(`${field.key} 不是 volatile 引用 —— 0.2.1 的 update() 会拒绝写入`)
+    }
+  }
+})
+
+await test('Config 的数值范围由 schema 强制（服务端，不只是前端提示）', () => {
+  // 旧版无 .min()：POST {"requestTimeoutMs":0} 能写进去，导致所有请求立刻 abort
+  let rejected = 0
+  for (const bad of [{ requestTimeoutMs: 0 }, { requestTimeoutMs: 999_999 }, { projectScanDepth: 99 }]) {
+    try { Config(bad) } catch { rejected++ }
+  }
+  if (rejected !== 3) throw new Error(`应拒绝 3 个越界值，实际 ${rejected}`)
 })
 
 await test('normalizeScope 收敛旧值与非法值', () => {
@@ -94,8 +117,18 @@ await test('detectUpdateType: same/major/minor/patch/downgrade', () => {
   if (detectUpdateType('2.0.0', '1.0.0') !== 'downgrade') throw new Error('downgrade')
 })
 
-await test('detectUpdateType: 非 semver 兜底 same 不崩', () => {
-  if (detectUpdateType('not-semver', 'also-not') !== 'same') throw new Error('应兜底 same')
+await test('detectUpdateType: 非 semver 返回 unknown（不再硬判 major）', () => {
+  // 旧版把 `workspace:*` / `*` 之类当 0.0.0，于是每个 monorepo 包都被判成 major
+  for (const [c, l] of [['not-semver', 'also-not'], ['workspace:*', '1.0.0'], ['*', '2.0.0'], ['file:../x', '1.0.0']]) {
+    if (detectUpdateType(c, l) !== 'unknown') throw new Error(`${c} → ${l} 应为 unknown，实际 ${detectUpdateType(c, l)}`)
+  }
+})
+
+await test('detectUpdateType: caret/tilde 不再被误判成 major（旧版真实 bug）', () => {
+  if (detectUpdateType('^18.2.0', '18.3.0') !== 'minor') throw new Error('^18.2.0→18.3.0 应为 minor')
+  if (detectUpdateType('~2.1.0', '2.2.0') !== 'minor') throw new Error('~2.1.0→2.2.0 应为 minor')
+  if (detectUpdateType('^1.2.3', '1.2.4') !== 'patch') throw new Error('^1.2.3→1.2.4 应为 patch')
+  if (detectUpdateType('^1.2.3', '2.0.0') !== 'major') throw new Error('^1.2.3→2.0.0 应为 major')
 })
 
 console.log('\n=== 层 2: 三范围扫描 ===\n')
@@ -373,15 +406,45 @@ await test('⭐ 同一 (scope, project) 第二次调用命中缓存，scannedAt 
 
 await test('⭐ 不同 scope / 不同 project 各自独立缓存', async () => {
   const state = new State(Config({}), { cwd: ROOT })
-  const p1 = await state.listPackages('project', NOWHERE)
-  const g1 = await state.listPackages('project', NOWHERE2)
-  const s1 = await state.listPackages('global')
-  if (p1.cached !== false || g1.cached !== false || s1.cached !== false) {
-    throw new Error('三个不同 key 的首次调用都应是 cached=false')
+  // ⚠️ 语义已收紧：不存在的 / 相对路径现在被 explicitProject() 拒绝
+  // （旧版会拿任意字符串当缓存键，既能读任意目录，又会让缓存键无界增长）。
+  // 所以「不同 key」要用两个**真实存在**的目录来验。
+  const other = mkdtempSync(join(tmpdir(), 'npmgr-other-proj-'))
+  writeFileSync(join(other, 'package.json'), JSON.stringify({ name: 'other', version: '1.0.0' }))
+  try {
+    const p1 = await state.listPackages('project', ROOT)
+    const p2 = await state.listPackages('project', other)
+    const s1 = await state.listPackages('global')
+    if (p1.cached !== false || p2.cached !== false || s1.cached !== false) {
+      throw new Error('三个不同 key 的首次调用都应是 cached=false')
+    }
+    if (state.listCacheSize() !== 3) throw new Error('应有 3 个缓存条目，实际 ' + state.listCacheSize())
+    const again = await state.listPackages('project', ROOT)
+    if (again.cached !== true) throw new Error('同 key 第二次应命中')
+  } finally {
+    rmSync(other, { recursive: true, force: true })
   }
-  if (state.listCacheSize() !== 3) throw new Error('应有 3 个缓存条目，实际 ' + state.listCacheSize())
-  const p2 = await state.listPackages('project', NOWHERE)
-  if (p2.cached !== true) throw new Error('同 key 第二次应命中')
+})
+
+await test('⭐ 非法 projectPath 被拒绝（不读任意目录、不污染缓存键）', async () => {
+  const state = new State(Config({}), { cwd: ROOT })
+  // 不存在 / 相对路径 / 无 package.json 的目录 → 一律降级为「用 cwd」
+  const before = state.listCacheSize()
+  await state.listPackages('project', NOWHERE)      // 绝对路径但不存在
+  await state.listPackages('project', NOWHERE2)     // 同上
+  await state.listPackages('project', 'relative/path') // 相对路径
+  if (state.listCacheSize() !== before + 1) {
+    throw new Error(`三个非法路径应只产生 1 个缓存条目（都降级为 cwd），实际 ${state.listCacheSize() - before}`)
+  }
+})
+
+await test('⭐ system 范围忽略 project 参数（不重复全量重扫）', async () => {
+  const state = new State(Config({}), { cwd: ROOT })
+  await state.listPackages('system', ROOT)
+  await state.listPackages('system', NOWHERE)
+  if (state.listCacheSize() !== 1) {
+    throw new Error(`system 范围不应按 project 分键，实际 ${state.listCacheSize()} 个条目`)
+  }
 })
 
 await test('⭐ 缓存键区分 scope：project 与 system 不串味', async () => {
@@ -806,9 +869,23 @@ await test('⭐ 合法补丁透传给 settings 服务（只含白名单字段）
 await test('settings 服务抛错时原样回传（不吞）', async () => {
   const state = new State(Config({ diskCache: false }), { cwd: ROOT })
   state.setSettingsScope({ update: () => Promise.reject(new Error('schema 校验失败: scope 非法')) })
-  const r = await state.applySettingsPatch({ scope: 'nonsense' })
+  // ⚠️ 语义变化：现在**先**用本地 Config schema 校验，非法值在到达 settings 服务之前
+  // 就被拦下（0.2.1 的 update 只校验类型/枚举，范围要靠 schema 自己带）。
+  // 所以这里给一个「类型合法但服务端会拒」的值，才能测到「服务错误原样回传」这条路径。
+  const r = await state.applySettingsPatch({ diskCacheDir: '/some/where' })
   if (r.ok !== false) throw new Error('应失败')
   if (!/schema 校验失败/.test(r.error || '')) throw new Error('应回传原始错误: ' + r.error)
+})
+
+await test('⭐ 非法值在本地 schema 就被拦下（不落到 settings 服务）', async () => {
+  const state = new State(Config({ diskCache: false }), { cwd: ROOT })
+  let called = false
+  state.setSettingsScope({ update: () => { called = true; return Promise.resolve() } })
+  for (const bad of [{ scope: 'nonsense' }, { requestTimeoutMs: 0 }, { projectScanDepth: 999 }]) {
+    const r = await state.applySettingsPatch(bad)
+    if (r.ok !== false) throw new Error('应拒绝 ' + JSON.stringify(bad))
+  }
+  if (called) throw new Error('非法值不该传到 settings 服务')
 })
 
 await test('字段描述表与白名单一致（单一事实来源）', () => {
@@ -830,6 +907,24 @@ await test('字段描述表与白名单一致（单一事实来源）', () => {
   }
 })
 
+/**
+ * 模拟 0.2.1 的「配置热更新」。
+ *
+ * 0.2.1 删掉了 `scope.watch`：改配置时 loader 直接把新值写进 volatile 引用
+ * （`updateVolatile`），**不重启插件**。测试要复刻这个行为，不能像旧版那样
+ * `st.updateConfig(Config({...}))` 换一个全新对象 —— 那样引用身份变了，
+ * 真实宿主里根本不会发生。
+ */
+function applyVolatilePatch(state, patch) {
+  const write = Symbol.for('cosmokit.volatile.write')
+  for (const [k, v] of Object.entries(patch)) {
+    const ref = state.config?.[k]
+    if (ref && typeof ref === 'object' && typeof ref[write] === 'function') ref[write](v)
+    else if (ref !== undefined) state.config[k] = v
+  }
+  return state.syncConfig()
+}
+
 await test('⭐ 改配置按影响面失效：改扫描深度不清 registry 缓存', async () => {
   const root = tempCacheDir()
   try {
@@ -838,8 +933,8 @@ await test('⭐ 改配置按影响面失效：改扫描深度不清 registry 缓
     st.registryClient.cacheSet('pkg:__probe__', { name: '__probe__' }, 60_000)
     if (st.registryClient.cacheSize() === 0) throw new Error('前置条件失败')
 
-    // 改一个与 registry 缓存无关的设置
-    st.updateConfig(Config({ diskCacheDir: root, projectScanDepth: 5 }))
+    // 改一个与 registry 缓存无关的设置（模拟 volatile 引用被原地更新）
+    if (!applyVolatilePatch(st, { projectScanDepth: 5 })) throw new Error('应检测到配置变化')
     if (st.registryClient.cacheSize() === 0) {
       throw new Error('改 projectScanDepth 不应清 registry 缓存（否则要重新拉 200+ 个包）')
     }
@@ -848,13 +943,20 @@ await test('⭐ 改配置按影响面失效：改扫描深度不清 registry 缓
 
     // 改一个确实影响 registry 缓存的设置 → 应清
     st.registryClient.cacheSet('pkg:__probe2__', { name: '__probe2__' }, 60_000)
-    st.updateConfig(Config({ diskCacheDir: root, projectScanDepth: 5, registryCacheTtlMs: 12345 }))
+    applyVolatilePatch(st, { registryCacheTtlMs: 12345 })
     if (st.registryClient.cacheSize() !== 0) {
       throw new Error('改 registryCacheTtlMs 应清 registry 缓存')
     }
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+await test('⭐ 未改配置时 syncConfig 不做无谓失效', async () => {
+  const st = new State(Config({}), { cwd: ROOT })
+  st.registryClient.cacheSet('pkg:__keep__', { name: '__keep__' }, 60_000)
+  if (applyVolatilePatch(st, {}) !== false) throw new Error('没改配置不该报告变化')
+  if (st.registryClient.cacheSize() === 0) throw new Error('没改配置不该清 registry 缓存')
 })
 
 await test('显式 invalidate() 仍然清全部缓存（「刷新缓存」的语义）', async () => {
@@ -1028,11 +1130,11 @@ await test('⭐ 改 diskCache 开关热生效（不用重启）', () => {
     const st = new State(Config({ diskCache: false, diskCacheDir: rootA }), { cwd: ROOT })
     if (st.diskCache !== null) throw new Error('前置条件：应禁用')
 
-    st.updateConfig(Config({ diskCache: true, diskCacheDir: rootA }))
+    applyVolatilePatch(st, { diskCache: true })
     if (st.diskCache === null) throw new Error('打开 diskCache 后应立刻有磁盘缓存（无需重启）')
     if (st.registryClient.diskCacheSize() !== 0) throw new Error('新块应为空')
 
-    st.updateConfig(Config({ diskCache: false, diskCacheDir: rootA }))
+    applyVolatilePatch(st, { diskCache: false })
     if (st.diskCache !== null) throw new Error('关掉后应立刻置空')
   } finally {
     rmSync(rootA, { recursive: true, force: true })
@@ -1047,7 +1149,7 @@ await test('⭐ 改 diskCacheDir 热切换且旧块先落盘', () => {
     st.registryClient.cacheSet('pkg:__probe__', { name: '__probe__' }, 60_000)
     if (st.registryClient.diskCacheSize() === 0) throw new Error('前置条件：应已写入旧块')
 
-    st.updateConfig(Config({ diskCacheDir: rootB }))
+    applyVolatilePatch(st, { diskCacheDir: rootB })
 
     const pathA = st.diskCache.path.replace(/\\/g, '/')
     if (!pathA.startsWith(rootB.replace(/\\/g, '/') + '/cache/')) {
@@ -1071,7 +1173,7 @@ await test('切到不可用目录时降级为纯内存缓存（不崩）', () =>
   try {
     const st = new State(Config({ diskCacheDir: rootA }), { cwd: ROOT })
     // 指向一个不可能建成的路径（Windows 上文件名含非法字符）
-    st.updateConfig(Config({ diskCacheDir: 'Z:\\definitely\\not\\writable\\\u0000bad' }))
+    applyVolatilePatch(st, { diskCacheDir: 'Z:\\definitely\\not\\writable\\\u0000bad' })
     // 不崩即可；要么拿到一个（惰性建目录的）实例，要么为 null
     if (st.diskCache !== null) {
       st.diskCache.set('k', 'v', 1000)
@@ -1096,6 +1198,11 @@ await test('RegistryClient 公开 API 完整(不崩)', () => {
 await test('⭐ 请求挂起时必须超时中止并重试（否则整次扫描永久卡住）', async () => {
   const orig = globalThis.fetch
   let calls = 0
+  // ⚠️ keepalive：`AbortSignal.timeout` 的定时器是 **unref** 的，如果这段 await 期间
+  // 进程里没有别的活跃句柄，Node 会判定事件循环空转、直接退出，测试表现为
+  // "unsettled top-level await" 假挂起（生产环境永远有别的句柄，不受影响）。
+  // 这里用一个 ref 的 interval 把循环钉住，测的才是真正的超时行为。
+  const keepAlive = setInterval(() => {}, 1000)
   try {
     // 模拟"网络半死"：连接建立但永不返回，只在被 abort 时拒绝
     globalThis.fetch = (_url, opts) => {
@@ -1118,12 +1225,15 @@ await test('⭐ 请求挂起时必须超时中止并重试（否则整次扫描�
     if (calls !== 2) throw new Error('应重试 1 次（共 2 次请求），实际 ' + calls)
     if (ms > 3000) throw new Error('超时未生效，耗时 ' + ms + 'ms（应约 300ms）')
   } finally {
+    clearInterval(keepAlive)
     globalThis.fetch = orig
   }
 })
 
 await test('⭐ 超时后该包被跳过，不阻塞其余包（流式扫描不会卡住）', async () => {
   const orig = globalThis.fetch
+  // 同上一个用例：AbortSignal.timeout 的 timer 是 unref 的，需要 ref 句柄钉住事件循环
+  const keepAlive = setInterval(() => {}, 1000)
   try {
     let n = 0
     globalThis.fetch = (url, opts) => {
@@ -1154,6 +1264,7 @@ await test('⭐ 超时后该包被跳过，不阻塞其余包（流式扫描不�
     if (!results[2] || results[2].name !== 'ok-pkg') throw new Error('正常包应成功')
     if (ms > 3000) throw new Error('正常包被挂起请求拖住了，耗时 ' + ms + 'ms')
   } finally {
+    clearInterval(keepAlive)
     globalThis.fetch = orig
   }
 })

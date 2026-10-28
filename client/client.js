@@ -31,18 +31,18 @@ window.__ModuleLoader__.load({
        *   3. `locale` 必须是**命名空间字符串**，字典另用 ctx.locale.register 注册。
        *   4. 加载期不得 console.*（会污染宿主 stdout）。
        */
-
+      
       var react = require('react')
-
+      
       var NS = 'npm-manager'
       var API = '/plugins/npm-manager'
       var CUSTOM = '__custom__'
       var ALL_PROJECTS = '__all__'
       /** 流式推送时最多多久刷新一次界面（毫秒）—— 避免 200+ 次 setState 造成卡顿 */
       var FLUSH_INTERVAL_MS = 120
-
+      
       /* ─────────────────────────── 字典 ─────────────────────────── */
-
+      
       var zh = {
         nav: 'NPM 管理器',
         title: 'NPM 管理器',
@@ -87,6 +87,7 @@ window.__ModuleLoader__.load({
         badgeMinor: '次版本',
         badgePatch: '补丁',
         badgeDowngrade: '降级',
+        badgeUnknown: '不可比',
         unknown: '—',
         dev: 'dev',
         missing: '目录不存在',
@@ -116,7 +117,7 @@ window.__ModuleLoader__.load({
         fHint_diskCacheDir: '留空则用 ~/.dsh/npm-manager',
         fHint_enableChangelog: '为单包详情拉取更新日志',
       }
-
+      
       var en = {
         nav: 'NPM Manager',
         title: 'NPM Manager',
@@ -161,6 +162,7 @@ window.__ModuleLoader__.load({
         badgeMinor: 'minor',
         badgePatch: 'patch',
         badgeDowngrade: 'downgrade',
+        badgeUnknown: 'not comparable',
         unknown: '—',
         dev: 'dev',
         missing: 'directory missing',
@@ -190,9 +192,9 @@ window.__ModuleLoader__.load({
         fHint_diskCacheDir: 'Empty means ~/.dsh/npm-manager',
         fHint_enableChangelog: 'Fetch release notes for package detail',
       }
-
+      
       /* ─────────────────────────── 样式 ─────────────────────────── */
-
+      
       var CSS = [
         '.npmgr-root{font-size:13px;line-height:1.6}',
         '.npmgr-head{display:flex;align-items:flex-start;gap:16px;margin-bottom:4px}',
@@ -275,7 +277,7 @@ window.__ModuleLoader__.load({
         '.npmgr-cfg-msg.err{color:#c0392b}',
         '.npmgr-cfg-note{font-size:11.5px;opacity:.5}',
       ].join('\n')
-
+      
       function ensureStyles() {
         if (typeof document === 'undefined') return
         if (document.getElementById('npm-manager-client-style')) return
@@ -284,17 +286,20 @@ window.__ModuleLoader__.load({
         style.textContent = CSS
         document.head.appendChild(style)
       }
-
+      
       /* ─────────────────────────── 小组件 ─────────────────────────── */
-
+      
       function badgeText(t, updateType) {
         if (updateType === 'major') return t('badgeMajor')
         if (updateType === 'minor') return t('badgeMinor')
         if (updateType === 'patch') return t('badgePatch')
         if (updateType === 'downgrade') return t('badgeDowngrade')
+        // 不可比（workspace:* / * / file: / link: 这类非版本协议）——
+        // 旧版会把它们硬判成 major，显示成「全是大版本升级」的假警报
+        if (updateType === 'unknown') return t('badgeUnknown')
         return ''
       }
-
+      
       /** 时间戳 → HH:MM（显示"这份数据是什么时候扫的"） */
       function fmtTime(ts) {
         if (typeof ts !== 'number' || !isFinite(ts)) return ''
@@ -303,12 +308,12 @@ window.__ModuleLoader__.load({
         var m = d.getMinutes()
         return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m
       }
-
+      
       /** 旋转指示器 */
       function spinner() {
         return react.createElement('span', { className: 'npmgr-spin', 'aria-hidden': 'true' })
       }
-
+      
       /** 一行包记录。返回 React 元素（绝不能返回普通对象）。 */
       function PackageRow(props) {
         var t = props.t
@@ -317,7 +322,7 @@ window.__ModuleLoader__.load({
         var outdated = p.isOutdated === true
         var badge = outdated ? badgeText(t, p.updateType) : ''
         var latest = p.latestVersion || t('unknown')
-
+      
         var cells = [
           react.createElement('td', { key: 'name' },
             react.createElement('div', { className: 'npmgr-name' },
@@ -328,25 +333,25 @@ window.__ModuleLoader__.load({
             p.currentVersion || t('unknown')),
           react.createElement('td', { key: 'lat', className: 'npmgr-mono' + (outdated ? ' npmgr-new' : ''), title: latest }, latest),
         ]
-
+      
         if (showProject) {
           cells.push(react.createElement('td', { key: 'proj' },
             react.createElement('div', { className: 'npmgr-proj', title: p.projectPath || '' }, p.project || t('unknown'))))
         }
-
+      
         cells.push(react.createElement('td', { key: 'desc' },
           react.createElement('div', { className: 'npmgr-desc', title: p.description || '' }, p.description || '')))
-
+      
         return react.createElement('tr', null, cells)
       }
-
+      
       /** 空状态 —— **只在扫描真正结束后**才显示，加载中绝不显示 */
       function emptyState(t) {
         return react.createElement('div', { className: 'npmgr-msg' },
           react.createElement('div', null, t('empty')),
           react.createElement('div', { className: 'npmgr-msg-sub' }, t('emptyHint')))
       }
-
+      
       /** 把 SSE 文本解析成事件数组（用于不支持流式 body 的降级路径） */
       function parseSseAll(text) {
         var out = []
@@ -358,9 +363,9 @@ window.__ModuleLoader__.load({
         }
         return out
       }
-
+      
       /* ─────────────────────────── 主页面 ─────────────────────────── */
-
+      
       /**
        * Settings → 「NPM 管理器」整页。
        *
@@ -369,59 +374,64 @@ window.__ModuleLoader__.load({
        */
       function NpmManagerSection(props) {
         var t = (props && props.t) || function (k) { return k }
-
+      
         var scopeState = react.useState('project')
         var scope = scopeState[0]
         var setScope = scopeState[1]
-
+      
         // 「本项目」用：选中的项目路径（空 = 用 dsh 进程 cwd）
         var projectState = react.useState('')
         var projectPath = projectState[0]
         var setProjectPath = projectState[1]
-
+      
         var customState = react.useState(false)
         var custom = customState[0]
         var setCustom = customState[1]
         var draftState = react.useState('')
         var draft = draftState[0]
         var setDraft = draftState[1]
-
+      
         // 「全系统」用：项目筛选（ALL_PROJECTS = 不筛）
         var filterState = react.useState(ALL_PROJECTS)
         var projectFilter = filterState[0]
         var setProjectFilter = filterState[1]
-
+      
         var queryState = react.useState('')
         var query = queryState[0]
         var setQuery = queryState[1]
-
+      
         var onlyState = react.useState(false)
         var onlyOutdated = onlyState[0]
         var setOnlyOutdated = onlyState[1]
-
+      
         var projectsState = react.useState({ list: [], current: '' })
         var projects = projectsState[0]
         var setProjects = projectsState[1]
-
+      
         /* ── 配置表单状态 ── */
         // settings：服务端下发的 {current, fields, writable}
         var settingsState = react.useState({ loaded: false, current: null, fields: [], writable: false })
         var cfgMeta = settingsState[0]
         var setCfgMeta = settingsState[1]
-
+      
         var showCfgState = react.useState(false)
         var showCfg = showCfgState[0]
         var setShowCfg = showCfgState[1]
-
+      
         // 只存被改过的字段（保存时作为 patch 提交）
-        var draftState = react.useState({})
-        var draft = draftState[0]
-        var setDraft = draftState[1]
-
+        //
+        // ⚠️ 变量名必须与「自定义路径」那个 draft 区分开：旧版这里也叫 draftState/draft/setDraft，
+        // 与上面第 379 行那份（string）**同名 var 重复声明**，后者覆盖前者 →
+        // 「自定义路径」的输入框拿到的是 `{}`，点应用就 `draft.trim is not a function`。
+        // 构建脚本和 tsc 都查不出（客户端是纯 JS），只有真交互才炸。
+        var cfgDraftState = react.useState({})
+        var cfgDraft = cfgDraftState[0]
+        var setCfgDraft = cfgDraftState[1]
+      
         var saveState = react.useState({ status: 'idle', error: null })
         var save = saveState[0]
         var setSave = saveState[1]
-
+      
         /**
          * view.status 的取值：
          *   loading   已发起请求、还没收到任何包（显示"正在扫描" + 旋转动画）
@@ -436,21 +446,21 @@ window.__ModuleLoader__.load({
         })
         var view = viewState[0]
         var setView = viewState[1]
-
+      
         var busyState = react.useState(false)
         var busy = busyState[0]
         var setBusy = busyState[1]
-
+      
         /**
          * 本地结果缓存：key = `scope\0projectPath`。
          * 切换范围/项目命中缓存时不发任何请求（扫描很慢，切子选项是高频操作）。
          */
         var cacheRef = react.useRef({})
-
+      
         // 用 ref 承载最新请求参数，避免把 load 绑死在依赖上导致重复请求
         var reqRef = react.useRef({ scope: scope, projectPath: projectPath })
         reqRef.current = { scope: scope, projectPath: projectPath }
-
+      
         // 已知项目列表（只取一次）
         react.useEffect(function () {
           var cancelled = false
@@ -463,7 +473,7 @@ window.__ModuleLoader__.load({
             .catch(function () { /* 项目列表拿不到不影响主流程 */ })
           return function () { cancelled = true }
         }, [])
-
+      
         // 配置元数据（当前值 + 字段描述 + 是否可写）—— 只取一次
         react.useEffect(function () {
           var cancelled = false
@@ -481,12 +491,12 @@ window.__ModuleLoader__.load({
             .catch(function () { /* 读不到配置不影响主流程 */ })
           return function () { cancelled = true }
         }, [])
-
+      
         /** 提交改动 */
         var saveConfig = react.useCallback(function () {
           var patch = {}
           var n = 0
-          for (var k in draft) { if (Object.prototype.hasOwnProperty.call(draft, k)) { patch[k] = draft[k]; n++ } }
+          for (var k in cfgDraft) { if (Object.prototype.hasOwnProperty.call(cfgDraft, k)) { patch[k] = cfgDraft[k]; n++ } }
           if (n === 0) { setSave({ status: 'idle', error: null }); return }
           setSave({ status: 'saving', error: null })
           fetch(API + '/settings', {
@@ -502,7 +512,7 @@ window.__ModuleLoader__.load({
               setCfgMeta(function (prev) {
                 return { loaded: true, current: res.body.current || prev.current, fields: prev.fields, writable: prev.writable }
               })
-              setDraft({})
+              setCfgDraft({})
               setSave({ status: 'saved', error: null })
               // 配置变更已在服务端作废缓存 → 本地也清掉并重新加载
               cacheRef.current = {}
@@ -512,7 +522,7 @@ window.__ModuleLoader__.load({
               setSave({ status: 'error', error: (e && e.message) ? e.message : String(e) })
             })
         }, [draft, load])
-
+      
         /**
          * 加载当前 (scope, projectPath)。
          *
@@ -525,7 +535,7 @@ window.__ModuleLoader__.load({
           var key = cur.scope + '\u0000' + (cur.scope === 'project' ? (cur.projectPath || '') : '')
           var store = cacheRef.current
           var finish = function () { if (typeof onDone === 'function') onDone() }
-
+      
           // ── 本地缓存命中：直接渲染，一个请求都不发 ──
           if (force !== true && store[key] !== undefined) {
             var hit = store[key].data
@@ -543,21 +553,21 @@ window.__ModuleLoader__.load({
             finish()
             return function () {}
           }
-
+      
           var cancelled = false
           var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null
           var acc = []
           var lastFlush = 0
           var expected
           var projectHint
-
+      
           // 先切到 loading 并**清空上一批行** —— 保留旧行会让人以为已经加载完了
           setView({
             status: 'loading', packages: [], totalCount: 0, outdatedCount: 0,
             projectCount: undefined, expected: undefined, scannedAt: undefined,
             cached: false, error: null,
           })
-
+      
           // 按 FLUSH_INTERVAL_MS 节流刷新，避免 200+ 次 setState 卡顿
           var flush = function (forceFlush) {
             var now = Date.now()
@@ -578,7 +588,7 @@ window.__ModuleLoader__.load({
               error: null,
             })
           }
-
+      
           var applyEvent = function (ev) {
             if (ev.type === 'meta') {
               expected = ev.total
@@ -618,12 +628,12 @@ window.__ModuleLoader__.load({
               throw new Error(ev.error || 'stream error')
             }
           }
-
+      
           var url = API + '/packages?stream=1&scope=' + encodeURIComponent(cur.scope)
           if (cur.scope === 'project' && cur.projectPath) {
             url += '&project=' + encodeURIComponent(cur.projectPath)
           }
-
+      
           fetch(url, { cache: 'no-store', signal: controller ? controller.signal : undefined })
             .then(function (r) {
               if (!r.ok) throw new Error('HTTP ' + r.status)
@@ -646,7 +656,12 @@ window.__ModuleLoader__.load({
                   if (chunk.done) {
                     var tail = buffer.trim()
                     if (tail && tail.indexOf('data:') === 0) {
-                      try { applyEvent(JSON.parse(tail.slice(5).trim())) } catch (e) { /* ignore */ }
+                      // ⚠️ try 只包 JSON.parse：applyEvent 对 error 帧会 throw，
+                      // 旧版把它一起包进 try → error 帧被当成「坏帧」静默吞掉，
+                      // 界面永远停在 streaming、刷新按钮的 busy 收不回。
+                      var tailEvent = null
+                      try { tailEvent = JSON.parse(tail.slice(5).trim()) } catch (e) { /* 坏帧，跳过 */ }
+                      if (tailEvent !== null) applyEvent(tailEvent)
                     }
                     return
                   }
@@ -656,7 +671,9 @@ window.__ModuleLoader__.load({
                     var frame = buffer.slice(0, idx).trim()
                     buffer = buffer.slice(idx + 2)
                     if (!frame || frame.indexOf('data:') !== 0) continue
-                    try { applyEvent(JSON.parse(frame.slice(5).trim())) } catch (e) { /* 跳过坏帧 */ }
+                    var parsed = null
+                    try { parsed = JSON.parse(frame.slice(5).trim()) } catch (e) { /* 坏帧，跳过 */ }
+                    if (parsed !== null) applyEvent(parsed)
                   }
                   return pump()
                 })
@@ -673,17 +690,17 @@ window.__ModuleLoader__.load({
               })
               finish()
             })
-
+      
           return function () {
             cancelled = true
             if (controller) { try { controller.abort() } catch (e) { /* ignore */ } }
           }
         }, [])
-
+      
         react.useEffect(function () {
           return load(false)
         }, [load, scope, projectPath])
-
+      
         var refresh = react.useCallback(function () {
           setBusy(true)
           fetch(API + '/refresh', { method: 'POST' })
@@ -697,7 +714,7 @@ window.__ModuleLoader__.load({
             })
             .catch(function () { setBusy(false) })
         }, [load])
-
+      
         /* 客户端筛选：项目 → 可升级 → 关键字（纯内存，不发请求） */
         var needle = query.trim().toLowerCase()
         var shown = view.packages.filter(function (p) {
@@ -706,12 +723,12 @@ window.__ModuleLoader__.load({
           if (needle && String(p.name).toLowerCase().indexOf(needle) === -1) return false
           return true
         })
-
+      
         var filtered = shown.length !== view.packages.length
         var showProjectColumn = scope === 'system'
         var streaming = view.status === 'loading' || view.status === 'streaming'
         var hasRows = view.packages.length > 0
-
+      
         /* ── 范围切换 ── */
         var scopeSeg = react.createElement('div', { className: 'npmgr-seg', role: 'group', 'aria-label': t('scopeLabel') },
           [['project', t('scopeProject')], ['global', t('scopeGlobal')], ['system', t('scopeSystem')]].map(function (pair) {
@@ -722,7 +739,7 @@ window.__ModuleLoader__.load({
               onClick: function () { setScope(pair[0]) },
             }, pair[1])
           }))
-
+      
         /* ── 「本项目」的项目选择器 ── */
         var projectPicker = null
         if (scope === 'project') {
@@ -736,7 +753,7 @@ window.__ModuleLoader__.load({
             options.push(react.createElement('option', { key: pj.path, value: pj.path }, label))
           }
           options.push(react.createElement('option', { key: CUSTOM, value: CUSTOM }, t('projectCustom')))
-
+      
           projectPicker = react.createElement('div', { className: 'npmgr-field' },
             react.createElement('span', null, t('projectLabel') + '：'),
             react.createElement('select', {
@@ -750,7 +767,7 @@ window.__ModuleLoader__.load({
               },
             }, options))
         }
-
+      
         /* ── 「本项目」的自定义路径输入 ── */
         var customRow = null
         if (scope === 'project' && custom) {
@@ -769,7 +786,7 @@ window.__ModuleLoader__.load({
               onClick: function () { setProjectPath(draft.trim()) },
             }, t('apply')))
         }
-
+      
         /* ── 「全系统」的项目筛选 ── */
         var projectFilterBox = null
         if (scope === 'system') {
@@ -793,7 +810,7 @@ window.__ModuleLoader__.load({
               onChange: function (e) { setProjectFilter(e.target.value) },
             }, foptions))
         }
-
+      
         /* ── 进度条：只在扫描中显示 ── */
         var progressBar = null
         if (streaming) {
@@ -805,7 +822,7 @@ window.__ModuleLoader__.load({
               ? react.createElement('div', { className: 'npmgr-slide' })
               : react.createElement('div', { className: 'npmgr-fill', style: { width: pct + '%' } }))
         }
-
+      
         /* ── 主体 ── */
         var body
         if (view.status === 'error') {
@@ -830,7 +847,7 @@ window.__ModuleLoader__.load({
           var W = showProjectColumn
             ? { name: '26%', cur: '10%', lat: '10%', proj: '20%' }
             : { name: '30%', cur: '13%', lat: '13%' }
-
+      
           var headCells = [
             react.createElement('th', { key: 'name', style: { width: W.name } }, t('colPackage')),
             react.createElement('th', { key: 'cur', style: { width: W.cur } }, t('colVersion')),
@@ -838,7 +855,7 @@ window.__ModuleLoader__.load({
           ]
           if (showProjectColumn) headCells.push(react.createElement('th', { key: 'proj', style: { width: W.proj } }, t('colProject')))
           headCells.push(react.createElement('th', { key: 'desc' }, t('colNote')))
-
+      
           body = react.createElement('div', { className: 'npmgr-wrap' },
             react.createElement('table', { className: 'npmgr-table' },
               react.createElement('thead', null, react.createElement('tr', null, headCells)),
@@ -852,16 +869,16 @@ window.__ModuleLoader__.load({
                   })
                 }))))
         }
-
+      
         /* ── 配置表单（默认折叠，避免喧宾夺主）── */
         var cfgSection = null
         if (cfgMeta.loaded && cfgMeta.fields.length > 0) {
           var cfgValueOf = function (key) {
-            if (Object.prototype.hasOwnProperty.call(draft, key)) return draft[key]
+            if (Object.prototype.hasOwnProperty.call(cfgDraft, key)) return cfgDraft[key]
             return cfgMeta.current ? cfgMeta.current[key] : undefined
           }
           var setField = function (key, value) {
-            setDraft(function (prev) {
+            setCfgDraft(function (prev) {
               var next = {}
               for (var k in prev) if (Object.prototype.hasOwnProperty.call(prev, k)) next[k] = prev[k]
               next[key] = value
@@ -869,8 +886,8 @@ window.__ModuleLoader__.load({
             })
             setSave({ status: 'idle', error: null })
           }
-          var dirty = Object.keys(draft).length > 0
-
+          var dirty = Object.keys(cfgDraft).length > 0
+      
           var items = cfgMeta.fields.map(function (f) {
             var v = cfgValueOf(f.key)
             var input
@@ -923,7 +940,7 @@ window.__ModuleLoader__.load({
               input,
               hint && hint !== hintKey ? react.createElement('div', { className: 'npmgr-cfg-hint' }, hint) : null)
           })
-
+      
           items.push(react.createElement('div', { className: 'npmgr-cfg-foot', key: '__foot' },
             react.createElement('button', {
               key: 'save',
@@ -935,14 +952,14 @@ window.__ModuleLoader__.load({
               key: 'reset',
               className: 'npmgr-btn',
               disabled: !dirty || save.status === 'saving',
-              onClick: function () { setDraft({}); setSave({ status: 'idle', error: null }) },
+              onClick: function () { setCfgDraft({}); setSave({ status: 'idle', error: null }) },
             }, t('cfgReset')),
             save.status === 'saved' ? react.createElement('span', { key: 'ok', className: 'npmgr-cfg-msg ok' }, '✓ ' + t('cfgSaved')) : null,
             save.status === 'error' ? react.createElement('span', { key: 'err', className: 'npmgr-cfg-msg err' }, save.error) : null,
             dirty && save.status === 'idle' ? react.createElement('span', { key: 'dirty', className: 'npmgr-cfg-msg' }, t('cfgDirty')) : null,
             react.createElement('span', { key: 'note', className: 'npmgr-cfg-note' },
               cfgMeta.writable ? t('cfgHint') : t('cfgUnwritable'))))
-
+      
           cfgSection = react.createElement('div', { className: 'npmgr-cfg' },
             react.createElement('button', {
               className: 'npmgr-cfg-toggle',
@@ -951,7 +968,7 @@ window.__ModuleLoader__.load({
             }, (showCfg ? '▾ ' : '▸ ') + t('cfg')),
             showCfg ? react.createElement('div', { className: 'npmgr-cfg-body' }, items) : null)
         }
-
+      
         /* ── 统计 ── */
         var statsChildren = []
         if (streaming) {
@@ -966,7 +983,7 @@ window.__ModuleLoader__.load({
           statsChildren.push(react.createElement('span', { key: 't' },
             t('statTotal') + ' ', react.createElement('b', null, view.totalCount), ' ' + t('statUnit')))
         }
-
+      
         if (view.outdatedCount > 0) {
           statsChildren.push(react.createElement('span', { key: 's1' }, ' · '))
           statsChildren.push(react.createElement('span', { key: 'o' },
@@ -975,13 +992,13 @@ window.__ModuleLoader__.load({
           statsChildren.push(react.createElement('span', { key: 's1' }, ' · '))
           statsChildren.push(react.createElement('span', { key: 'o0' }, t('upToDate')))
         }
-
+      
         if (scope === 'system' && typeof view.projectCount === 'number') {
           statsChildren.push(react.createElement('span', { key: 's2' }, ' · '))
           statsChildren.push(react.createElement('span', { key: 'p' },
             react.createElement('b', null, view.projectCount), ' ' + t('statProjects')))
         }
-
+      
         // 数据时间：切范围/切项目时这个值不变 → 一眼看出用的是缓存
         var stamp = fmtTime(view.scannedAt)
         if (stamp) {
@@ -989,7 +1006,7 @@ window.__ModuleLoader__.load({
           statsChildren.push(react.createElement('span', { key: 'd', title: t('refreshHint') },
             t('dataAt') + ' ' + stamp + (view.cached ? ' (' + t('cachedTag') + ')' : '')))
         }
-
+      
         return react.createElement('section', { className: 'npmgr-root', 'data-plugin': NS },
           react.createElement('div', { className: 'npmgr-head' },
             react.createElement('div', null,
@@ -1001,7 +1018,7 @@ window.__ModuleLoader__.load({
                 onClick: refresh,
                 disabled: busy,
               }, busy ? spinner() : null, busy ? t('refreshing') : t('refresh')))),
-
+      
           react.createElement('div', { className: 'npmgr-bar' },
             scopeSeg,
             projectPicker,
@@ -1022,29 +1039,29 @@ window.__ModuleLoader__.load({
               }),
               t('onlyOutdated')),
             react.createElement('span', { className: 'npmgr-stats' }, statsChildren)),
-
+      
           progressBar,
           customRow,
           body,
           cfgSection)
       }
-
+      
       /* ─────────────────────────── 插件四件套 ─────────────────────────── */
-
+      
       exports.name = NS
       exports.inject = ['slots', 'locale']
-
+      
       exports.apply = function (ctx) {
         ensureStyles()
-
+      
         // 字典必须走命名空间注册；条目里只写 locale: NS（字符串）
         ctx.effect(function () {
           return ctx.locale.register(NS, { zh: zh, en: en })
         }, NS + ': dictionaries')
-
+      
         // label 需要能随语言切换，所以用绑定了命名空间的 t
         var t = ctx.locale.bind(NS)
-
+      
         ctx.slots.inject('settings.section', function () {
           return ctx.slots.register({
             name: 'settings.section',

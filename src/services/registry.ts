@@ -5,7 +5,30 @@
  * 错误消息经过 sanitize(§安全教训: 不把 URL 凭据 / Bearer token 泄露给模型)
  */
 
+import { readFileSync } from 'node:fs'
 import { DiskCache } from './disk-cache.js'
+
+/**
+ * 出站请求的 User-Agent。
+ *
+ * ⚠️ 别再手写 `0.6.0` 这种字面量 —— 版本已经走到 0.7.x，硬编码只会
+ * 让上游看到的客户端版本永远过时（且没有任何地方会因此报错）。
+ * 这里跟随 package.json 的版本；读不到就退回不带版本号的安全值。
+ */
+function resolveUserAgent(): string {
+  try {
+    // 构建产物在 lib/services/ 下，package.json 在仓库根 → ../../package.json
+    const url = new URL('../../package.json', import.meta.url)
+    const pkg = JSON.parse(readFileSync(url, 'utf8')) as { name?: string; version?: string }
+    const name = pkg.name ?? 'dsh-plugin-npm-manager'
+    const version = pkg.version ?? 'unknown'
+    return `${name}/${version}`
+  } catch {
+    return 'dsh-plugin-npm-manager'
+  }
+}
+
+const USER_AGENT = resolveUserAgent()
 
 export interface PackageMeta {
   name: string
@@ -15,7 +38,7 @@ export interface PackageMeta {
   homepage?: string
   repository?: string
   isOutdated: boolean
-  updateType: 'major' | 'minor' | 'patch' | 'same' | 'downgrade'
+  updateType: 'major' | 'minor' | 'patch' | 'same' | 'downgrade' | 'unknown'
 }
 
 export interface ChangelogSection {
@@ -80,7 +103,9 @@ function toPackageMeta(slim: SlimPackageMeta, currentVersion: string): PackageMe
     description: slim.description ?? '',
     homepage: slim.homepage,
     repository: slim.repository,
-    isOutdated: cmpVersion(currentVersion, latest) < 0,
+    // 不可比（workspace:* / * / file: ...）时不算「过期」——
+    // 硬判成过期会让每个 monorepo 包都亮黄徽章，属于假警报
+    isOutdated: (cmpVersion(currentVersion, latest) ?? 0) < 0,
     updateType: detectUpdateType(currentVersion, latest),
   }
 }
@@ -130,25 +155,82 @@ function sanitizeError(msg: string): string {
     .replace(/([a-z]+:\/\/)[^@\/\s]+:[^@\/\s]+@/gi, '$1***:***@')
 }
 
-/** semver 比较的最小实现(避免引入 semver 包依赖) */
-function cmpVersion(a: string, b: string): number {
-  const pa = String(a).replace(/^[\^~>=<]+/, '').split('.').map(s => parseInt(s, 10) || 0)
-  const pb = String(b).replace(/^[\^~>=<]+/, '').split('.').map(s => parseInt(s, 10) || 0)
+/**
+ * 解析一个版本字符串为 `[major, minor, patch]`。
+ *
+ * ⚠️ 必须**同时**处理三类输入，否则判定会静默错：
+ *   - semver range 前缀：`^18.2.0` / `~2.1.0` / `>=1.2.3` / `1.2.x`
+ *   - 非版本协议：`workspace:*` / `*` / `latest` / `file:...` / `link:...` / `npm:foo@1.2.3`
+ *   - 预发布尾巴：`2.0.0-beta.1`
+ *
+ * 非版本输入返回 `null`，调用方据此给「不可比」而不是硬判成 0.0.0
+ * （旧实现把 `workspace:*` 当 0.0.0，于是每个 monorepo 包都被判成 major）。
+ */
+export function parseVersion(raw: string): [number, number, number] | null {
+  const s = String(raw ?? '').trim()
+  if (s === '') return null
+
+  // 非版本协议 / 通配：一律不可比
+  if (/^[a-z]+:/i.test(s)) return null                 // workspace: / file: / link: / npm:
+  if (/^[*x]$/i.test(s) || s === 'latest' || s === 'next' || s === 'beta') return null
+
+  // 剥掉 range 前缀与 npm 别名（`npm:foo@1.2.3` 已在上面拦掉）
+  let body = s.replace(/^[\^~>=<v]+/, '').trim()
+  // 去掉 `>=1.2.3 <2.0.0` 这类复合 range 的后半段
+  body = body.split(/\s+/)[0] ?? ''
+  // 去掉预发布 / build 尾巴：`2.0.0-beta.1` → `2.0.0`
+  body = body.split(/[-+]/)[0] ?? ''
+
+  const parts = body.split('.')
+  if (parts.length === 0) return null
+  const nums: number[] = []
   for (let i = 0; i < 3; i++) {
-    if ((pa[i] || 0) > (pb[i] || 0)) return 1
-    if ((pa[i] || 0) < (pb[i] || 0)) return -1
+    const p = parts[i]
+    // `x` / `*` 作为占位（`1.x`、`1.2.x`）视为 0，但至少 major 要能解析
+    if (p === undefined) { nums.push(0); continue }
+    if (p === 'x' || p === 'X' || p === '*') { nums.push(0); continue }
+    const n = parseInt(p, 10)
+    if (!Number.isFinite(n)) return null
+    nums.push(n)
+  }
+  // 至少 major 段要是真数字，否则不是版本
+  const majorRaw = parts[0]
+  if (majorRaw === undefined || !Number.isFinite(parseInt(majorRaw, 10))) return null
+  return [nums[0], nums[1], nums[2]]
+}
+
+/** semver 比较的最小实现(避免引入 semver 包依赖)；不可比时返回 null */
+function cmpVersion(a: string, b: string): number | null {
+  const pa = parseVersion(a)
+  const pb = parseVersion(b)
+  if (pa === null || pb === null) return null
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] > pb[i]) return 1
+    if (pa[i] < pb[i]) return -1
   }
   return 0
 }
 
-export type UpdateType = 'major' | 'minor' | 'patch' | 'same' | 'downgrade'
+export type UpdateType = 'major' | 'minor' | 'patch' | 'same' | 'downgrade' | 'unknown'
 
+/**
+ * 判定升级类型。
+ *
+ * ⚠️ 旧实现只剥 `^~` 给了 `cmpVersion`，却在下面重新 `split('.')` 原始字符串，
+ * 于是 `'^18'` → `NaN` → `0` → 所有 caret 依赖的 minor/patch 升级都被判成 major。
+ * 现在两处共用 {@link parseVersion}，并且不可比时返回 `'unknown'` 而不是瞎猜。
+ */
 export function detectUpdateType(current: string, latest: string): UpdateType {
+  const pc = parseVersion(current)
+  const pl = parseVersion(latest)
+  // 任一侧不是可比版本（workspace:* / * / file: ...）→ 明确报 unknown，
+  // 让 UI 显示「不可比」，而不是假装它是大版本升级。
+  if (pc === null || pl === null) return 'unknown'
+
   const c = cmpVersion(current, latest)
   if (c === 0) return 'same'
-  if (c > 0) return 'downgrade'  // current 比 latest 新 → 罕见但可能(npm 撤回发布)
-  const pc = String(current).split('.').map(s => parseInt(s, 10) || 0)
-  const pl = String(latest).split('.').map(s => parseInt(s, 10) || 0)
+  if (c !== null && c > 0) return 'downgrade'  // current 比 latest 新 → 罕见但可能(npm 撤回发布)
+
   if (pc[0] < pl[0]) return 'major'
   if (pc[1] < pl[1]) return 'minor'
   return 'patch'
@@ -225,9 +307,11 @@ export class RegistryClient {
   private async fetchJson(url: string, signal?: AbortSignal): Promise<RegistryPackageData> {
     const headers: Record<string, string> = {
       'Accept': 'application/json',
-      'User-Agent': 'dsh-plugin-npm-manager/0.6.0',
+      'User-Agent': USER_AGENT,
     }
-    if (this.githubToken) headers['Authorization'] = `Bearer ${this.githubToken}`
+    // ⚠️ 这里**绝不能**加 Authorization：`fetchJson` 只用于 registry.npmjs.org，
+    // 把 GitHub PAT 发到 npm registry 是跨源凭据泄露（旧版就是这么错的）。
+    // GitHub 分支在 fetchGithub 里单独注入。
     return await this.fetchWithTimeout(url, headers, 'json', signal) as RegistryPackageData
   }
 
@@ -251,7 +335,13 @@ export class RegistryClient {
   private cacheSet(key: string, value: unknown, ttlMs?: number): void {
     const ttl = ttlMs ?? this.defaultTtlMs
     this.cache.set(key, { value, expiresAt: Date.now() + ttl })
-    if (this.disk !== null) this.disk.set(key, value, this.diskTtlMs)
+    if (this.disk !== null) {
+      // ⚠️ 磁盘 TTL 必须取 **min(本次 TTL, 磁盘 TTL)**。
+      // 旧版无脑用 diskTtlMs：于是「changelog 找不到」这类 10 分钟负缓存
+      // 被落盘 24 小时，且内存过期后又会从磁盘回填 —— 用户一天内一直看到
+      // 「没有更新日志」，且重启也救不回来。
+      this.disk.set(key, value, Math.min(ttl, this.diskTtlMs))
+    }
   }
 
   /**
@@ -391,7 +481,7 @@ export class RegistryClient {
     const url = `https://api.github.com/repos/${slug.owner}/${slug.repo}/releases?per_page=${CHANGELOG_LIMIT}`
     const headers: Record<string, string> = {
       'Accept': 'application/vnd.github+json',
-      'User-Agent': 'dsh-plugin-npm-manager/0.6.0',
+      'User-Agent': USER_AGENT,
     }
     // 有 token 就带上：未认证限额 60 次/小时，认证后 5000
     if (this.githubToken) headers['Authorization'] = `Bearer ${this.githubToken}`
@@ -424,7 +514,7 @@ export class RegistryClient {
       try {
         const text = await this.fetchWithTimeout(
           url,
-          { 'User-Agent': 'dsh-plugin-npm-manager/0.6.0' },
+          { 'User-Agent': USER_AGENT },
           'text',
           opts.signal,
         )

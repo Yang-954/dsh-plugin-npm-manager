@@ -4,15 +4,15 @@
  * 工具 #1~#4 + 路由都共用这一个 state(避免重复创建 RegistryClient)
  */
 
-import { existsSync } from 'node:fs'
-import { relative } from 'node:path'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { isAbsolute, join, normalize, relative } from 'node:path'
 import {
-  scanPackages, normalizeScope, projectTitleOf, discoverNodeProjects,
+  scanPackages, normalizeScope, projectTitleOf, discoverNodeProjects, globalNodeModulesCandidates,
   type ProjectRef, type Scope,
 } from './scanner.js'
-import { RegistryClient, type ChangelogSection, type PackageMeta } from './registry.js'
+import { RegistryClient, parseVersion, type ChangelogSection, type PackageMeta } from './registry.js'
 import { DiskCache } from './disk-cache.js'
-import { WRITABLE_SETTING_KEYS } from '../config.js'
+import { WRITABLE_SETTING_KEYS, CONFIG_KEYS, Config, readConfigValue } from '../config.js'
 
 /** 带项目归属的包元数据（仅 system 范围填充 project/projectPath） */
 export interface ScopedPackageMeta extends PackageMeta {
@@ -45,6 +45,8 @@ export interface PackageListResult {
   cached?: boolean
   /** 这份数据实际扫描完成的时间戳（缓存命中时是原始扫描时间） */
   scannedAt?: number
+  /** 解析失败（404/超时/限流）的包数 —— 数据不完整时如实报出去 */
+  failedCount?: number
 }
 
 /** 一次扫描结果的缓存条目 */
@@ -110,6 +112,13 @@ export class State {
   private injectProbe: (() => { control: boolean; workspace: boolean }) | null = null
   /** settings 作用域（由 installSettingsPanel 注入）；null = 只读 */
   private settingsScope: any = null
+  /**
+   * settings 文档的当前 revision（0.2.1 乐观并发用）。
+   *
+   * `describe()` 返回它；`update(ns, patch, revision)` 要求传回。传错会抛
+   * `SETTINGS_CONFLICT`，从而避免两个标签页互相覆盖。
+   */
+  settingsRevision: number | undefined = undefined
   /** listProjects() 的缓存（发现过程要遍历目录树） */
   private projectCache: { at: number; list: ProjectInfo[] } | null = null
   /**
@@ -120,6 +129,16 @@ export class State {
    * 直到显式「刷新缓存」或 TTL 到期。
    */
   private listCache = new Map<string, ListCacheEntry>()
+  /** 上次看到的配置值快照（用于检测 0.2.1 volatile 引用的原地更新） */
+  private lastConfigSnapshot: Record<string, any> = {}
+  /**
+   * 缓存代数。
+   *
+   * 每次 {@link invalidate}（刷新按钮 / 配置变更）就 +1。扫描开始时记下当时的代数，
+   * 结束前比对：不一致说明「扫描期间有人清了缓存」，这份结果不能再写回
+   * （否则旧数据会被盖上新的 scannedAt 混进缓存）。
+   */
+  private cacheGeneration = 0
 
   constructor(config: any, opts: StateOptions) {
     this.config = config
@@ -129,13 +148,25 @@ export class State {
     const disk = this.createDiskCache()
     this.diskCache = disk
     this.registryClient = new RegistryClient({
-      cacheTtlMs: config.registryCacheTtlMs,
-      githubToken: config.githubToken,
+      cacheTtlMs: this.cfg('registryCacheTtlMs'),
+      githubToken: this.cfg('githubToken'),
       diskCache: disk,
-      diskTtlMs: config.diskCacheTtlMs,
-      requestTimeoutMs: config.requestTimeoutMs,
+      diskTtlMs: this.cfg('diskCacheTtlMs'),
+      requestTimeoutMs: this.cfg('requestTimeoutMs'),
     })
     this.cacheInvalidatedAt = Date.now()
+    this.lastConfigSnapshot = this.configValues()
+  }
+
+  /**
+   * 读一项配置的**当前值**。
+   *
+   * ⚠️ 0.2.1 里标了 `.volatile()` 的字段是 `{ get() }` 引用，不是普通值。
+   * 全类统一走这里，不要写 `this.config.x` —— 那拿到的是引用对象，
+   * 会让 `scope === 'system'` 之类的比较全部失效（且不报错，最阴的一种）。
+   */
+  private cfg<T = any>(key: string): T {
+    return readConfigValue<T>(this.config?.[key])
   }
 
   /**
@@ -145,9 +176,9 @@ export class State {
    * 绝不让缓存问题影响插件主流程。
    */
   private createDiskCache(): DiskCache | null {
-    if (this.config?.diskCache === false) return null
+    if (this.cfg('diskCache') === false) return null
     try {
-      const dir = this.config?.diskCacheDir
+      const dir = this.cfg('diskCacheDir')
       return new DiskCache({
         dir: typeof dir === 'string' && dir.trim() !== '' ? dir.trim() : undefined,
       })
@@ -156,8 +187,13 @@ export class State {
     }
   }
 
-  /** 注入 DSH 工作区列表（服务缺失时不调用 → 自动降级） */
-  setWorkspaceProvider(fn: () => ProjectRef[]): void {
+  /**
+   * 注入 DSH 工作区列表（服务缺失时不调用 → 自动降级）。
+   *
+   * 传 `null` 表示撤销（热重载时 effect 清理会调它）—— 不撤销的话
+   * 旧闭包会一直指向已销毁的 sctx，重载后「全系统」范围会静默变空。
+   */
+  setWorkspaceProvider(fn: (() => ProjectRef[]) | null): void {
     this.workspaceProvider = fn
     this.projectCache = null // 换了提供者，作废已缓存的项目列表
   }
@@ -191,16 +227,20 @@ export class State {
   }
 
   /**
-   * 应用一组配置改动。
+   * 应用一组配置改动（0.2.1 契约）。
    *
    * - 只接受 {@link WRITABLE_SETTING_KEYS} 白名单内的 key（凭据类字段永远不可写）
-   * - 值的合法性交给 settings 服务校验（`scope.update` 内部会按 schema resolve，
-   *   非法值抛错 → 原样回给调用方，不会写坏文档）
-   * - 写入成功后 `scope.watch` 会触发 {@link updateConfig} → 缓存作废，热生效
+   * - 值先由 schema 校验（{@link Config} 上的 min/max 是**服务端**约束，
+   *   不只是前端渲染提示 —— 0.1.5 时代这里没有范围校验，能写进 0）
+   * - 再走 `settings.update(ns, patch, revision)`：0.2.1 用 revision 做乐观并发，
+   *   过期 revision 抛 `SETTINGS_CONFLICT`，避免两个标签页互相覆盖
+   *
+   * 写入成功后 volatile 引用会被 loader 原地更新，下次 {@link cfg} 读到的就是新值；
+   * {@link syncConfig} 负责据此作废缓存（热生效，不重启）。
    */
   async applySettingsPatch(patch: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> {
     if (this.settingsScope === null) {
-      return { ok: false, error: '设置作用域不可用（插件可能未完全加载）' }
+      return { ok: false, error: '设置作用域不可用（插件未完全加载或宿主无 settings 服务）' }
     }
     const clean: Record<string, unknown> = {}
     const rejected: string[] = []
@@ -210,12 +250,78 @@ export class State {
     }
     if (rejected.length > 0) return { ok: false, error: `不接受的配置项：${rejected.join('、')}` }
     if (Object.keys(clean).length === 0) return { ok: false, error: '没有要修改的配置项' }
+
+    // 先按 schema 校验范围：0.2.1 的 update 只校验类型/枚举，数字范围要靠 schema 自己带
+    try {
+      Config({ ...this.configValues(), ...clean })
+    } catch (e: any) {
+      return { ok: false, error: (e && e.message) ? e.message : String(e) }
+    }
+
     try {
       await this.settingsScope.update(clean)
+      // update 只改引用；这里立刻同步一次，让缓存作废不等下一次请求
+      this.syncConfig()
       return { ok: true }
     } catch (e: any) {
       return { ok: false, error: (e && e.message) ? e.message : String(e) }
     }
+  }
+
+  /** 当前配置的值快照（解引用后；用于比较与下发，**不要**拿它当长期配置） */
+  configValues(): Record<string, any> {
+    const out: Record<string, any> = {}
+    for (const key of CONFIG_KEYS) out[key] = this.cfg(key)
+    return out
+  }
+
+  /**
+   * 检测 volatile 引用是否被改了，并按影响面作废缓存。
+   *
+   * 0.2.1 删掉了 `scope.watch`，改配置时 loader 直接把新值写进 volatile 引用
+   * （`updateVolatile`），**不重启插件**。所以这里在每次读取前对比一次快照：
+   * 变了就按影响面失效 —— 改「扫描深度」不该清 registry 缓存（否则要重拉 60 秒）。
+   */
+  syncConfig(): boolean {
+    const prev = this.lastConfigSnapshot
+    const next = this.configValues()
+    let changed = false
+    for (const key of CONFIG_KEYS) {
+      if (prev[key] !== next[key]) { changed = true; break }
+    }
+    if (!changed) return false
+    this.lastConfigSnapshot = next
+
+    // 结果缓存与项目发现缓存**总是**作废 —— 它们直接依赖配置
+    this.cacheGeneration++
+    this.cacheInvalidatedAt = Date.now()
+    this.projectCache = null
+    this.listCache.clear()
+
+    const diskAffecting = ['diskCache', 'diskCacheDir', 'diskCacheTtlMs']
+    const diskChanged = diskAffecting.some((k) => prev[k] !== next[k])
+    const registryAffecting = ['registryCacheTtlMs', ...diskAffecting]
+    const registryChanged = registryAffecting.some((k) => prev[k] !== next[k])
+
+    // 先热重建磁盘缓存（内部会 flush 旧的那块），再决定要不要清 registry 内存缓存
+    if (diskChanged) this.rebuildDiskCache()
+
+    if (registryChanged) {
+      try {
+        this.registryClient.clearCache()
+      } catch {
+        /* ignore */
+      }
+    }
+    return true
+  }
+
+  /**
+   * 兼容旧调用点（settings 面板装好后会先调一次）。
+   * 现在没有 `watch` 了，等价于「强制同步一次」。
+   */
+  updateConfig(_next?: any): void {
+    this.syncConfig()
   }
 
   /** 诊断快照 */
@@ -233,42 +339,6 @@ export class State {
   }
 
   /**
-   * settings 改了 → 更新 config 并**按影响面**失效缓存。
-   *
-   * ⚠️ 不能无脑调 {@link invalidate}：那会把 registry + 磁盘缓存一起清掉，
-   * 于是改个「项目扫描深度」也要重新拉 200+ 个包（实测约 60 秒）。
-   * 只有真正影响 registry 缓存的设置变化时才清它。
-   *
-   * 另外：`diskCache` / `diskCacheDir` / `diskCacheTtlMs` 变化时**热重建磁盘缓存** ——
-   * 否则界面上改完没反应，要重启才生效（之前就是这个坑）。
-   */
-  updateConfig(next: any): void {
-    const prev = this.config
-    this.config = next
-
-    // 结果缓存与项目发现缓存**总是**作废 —— 它们直接依赖配置
-    this.cacheInvalidatedAt = Date.now()
-    this.projectCache = null
-    this.listCache.clear()
-
-    const diskAffecting = ['diskCache', 'diskCacheDir', 'diskCacheTtlMs']
-    const diskChanged = diskAffecting.some((k) => prev?.[k] !== next?.[k])
-    const registryAffecting = ['registryCacheTtlMs', ...diskAffecting]
-    const registryChanged = registryAffecting.some((k) => prev?.[k] !== next?.[k])
-
-    // 先热重建磁盘缓存（内部会 flush 旧的那块），再决定要不要清 registry 内存缓存
-    if (diskChanged) this.rebuildDiskCache()
-
-    if (registryChanged) {
-      try {
-        this.registryClient.clearCache()
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-
-  /**
    * 按当前 config 重建磁盘缓存并换给 registry 客户端。
    *
    * 换之前**先把旧块 flush** —— 它可能还有 debounce 里没落盘的条目。
@@ -282,7 +352,7 @@ export class State {
     const next = this.createDiskCache()
     this.diskCache = next
     try {
-      this.registryClient.setDiskCache(next, this.config?.diskCacheTtlMs)
+      this.registryClient.setDiskCache(next, this.cfg<number>('diskCacheTtlMs'))
     } catch {
       /* ignore */
     }
@@ -296,6 +366,8 @@ export class State {
    */
   invalidate(): void {
     this.cacheInvalidatedAt = Date.now()
+    // 代数 +1：在途扫描结束时会发现代数变了，从而放弃写回缓存
+    this.cacheGeneration++
     this.projectCache = null
     this.listCache.clear()
     try {
@@ -324,7 +396,7 @@ export class State {
 
   /** 结果缓存的有效期；配置为 0 或负数时用默认 30 分钟 */
   private listCacheTtlMs(): number {
-    const v = this.config?.listCacheTtlMs
+    const v = this.cfg<number>('listCacheTtlMs')
     return typeof v === 'number' && v > 0 ? v : 1_800_000
   }
 
@@ -378,7 +450,7 @@ export class State {
 
     for (const w of workspaces) {
       if (!w.path) continue
-      const found = discoverNodeProjects(w.path, { maxDepth: this.config.projectScanDepth ?? 3 })
+      const found = discoverNodeProjects(w.path, { maxDepth: this.cfg<number>('projectScanDepth') ?? 3 })
       for (const dir of found) {
         const rel = relative(w.path, dir).replace(/\\/g, '/')
         const title = rel === '' ? (w.title || projectTitleOf(dir)) : `${w.title || projectTitleOf(w.path)}/${rel}`
@@ -413,8 +485,32 @@ export class State {
   }
 
   /** 归一化显式 project 参数 */
-  private explicitProject(projectPath?: string): string | undefined {
-    return typeof projectPath === 'string' && projectPath.trim() !== '' ? projectPath.trim() : undefined
+  /**
+   * 归一化显式 project 参数。
+   *
+   * ⚠️ 旧版只 `trim()` 就放行 —— `?project=C:\任意目录` 能读任意目录的 package.json，
+   * 而且 `system` 范围下这个参数其实被忽略，却仍然参与缓存键，导致同一份系统数据
+   * 被不同字符串反复全量重扫、缓存键无界增长。
+   *
+   * 现在的约束：
+   * - 只接受**绝对路径**（相对路径在不同 cwd 下含义不同，缓存键会互相污染）
+   * - 必须是已存在的目录，且目录下有 `package.json`（否则扫出来必然是空，属于误用）
+   * - `system` 范围直接丢弃该参数（它本来就按「所有已知项目」扫）
+   */
+  private explicitProject(projectPath: string | undefined, scope: Scope): string | undefined {
+    if (scope === 'system') return undefined
+    if (typeof projectPath !== 'string') return undefined
+    const raw = projectPath.trim()
+    if (raw === '') return undefined
+    if (!isAbsolute(raw)) return undefined
+    const normalized = normalize(raw)
+    try {
+      if (!existsSync(normalized) || !statSync(normalized).isDirectory()) return undefined
+      if (!existsSync(join(normalized, 'package.json'))) return undefined
+    } catch {
+      return undefined
+    }
+    return normalized
   }
 
   /** 缓存键 */
@@ -446,8 +542,9 @@ export class State {
    * 缓存命中时把缓存内容一次性推完（前端几乎瞬时看到完整列表）。
    */
   async *streamPackages(scope?: string, projectPath?: string): AsyncGenerator<StreamEvent> {
-    const effectiveScope: Scope = normalizeScope(scope ?? this.config.scope)
-    const explicit = this.explicitProject(projectPath)
+    this.syncConfig()
+    const effectiveScope: Scope = normalizeScope(scope ?? this.cfg<string>('scope'))
+    const explicit = this.explicitProject(projectPath, effectiveScope)
     const key = this.keyOf(effectiveScope, explicit)
 
     // ── 缓存命中：直接吐出来 ──
@@ -477,6 +574,8 @@ export class State {
     yield { type: 'meta', scope: effectiveScope, total: installed.length, projectCount: projects?.length, cached: false }
 
     const packages: ScopedPackageMeta[] = []
+    // 记下扫描开始时的缓存代数：结束前若有人刷新缓存，这份结果就不写回
+    const generation = this.cacheGeneration
 
     // ── 完成即推送：N 个 worker 并发解析，谁先完成谁先进队 ──
     // （用 Promise.all 分批会让每批都等最慢的那个，首个结果可能等到好几秒）
@@ -488,6 +587,8 @@ export class State {
 
     const worker = async (): Promise<void> => {
       while (cursor < installed.length) {
+        // 缓存被清了（用户点了刷新）→ 立刻停止打网络，别再白烧请求
+        if (generation !== this.cacheGeneration) { settled = installed.length; kick(); return }
         const p = installed[cursor++]
         const m = await this.resolveOne(p)
         settled++
@@ -518,6 +619,7 @@ export class State {
     }
 
     const scannedAt = Date.now()
+    const failed = installed.length - packages.length
     const result: PackageListResult = {
       packages,
       totalCount: packages.length,
@@ -527,8 +629,11 @@ export class State {
       cached: false,
       scannedAt,
     }
+    // 失败项如实报出去（旧版静默丢弃，进度条分母对不上却毫无提示）
+    if (failed > 0) result.failedCount = failed
     if (projects !== undefined) result.projectCount = projects.length
-    this.cachePut(key, result, scannedAt)
+    // 只有代数没变（期间没被刷新）才写回缓存
+    if (generation === this.cacheGeneration) this.cachePut(key, result, scannedAt)
     // ⚠️ 显式落盘 —— debounce 期间 stream 持续触发 set，timer 一直被推迟，
     //    可能直到 stream 结束都不会自动 flush。这里强制 flush 保证全部 220 个包
     //    都写到磁盘；下一进程冷启动就能拿到。
@@ -552,8 +657,9 @@ export class State {
    * 需要真正刷新时调用 {@link invalidate}（「刷新缓存」按钮 / 配置变更）。
    */
   async listPackages(scope?: string, projectPath?: string): Promise<PackageListResult> {
-    const effectiveScope: Scope = normalizeScope(scope ?? this.config.scope)
-    const explicit = this.explicitProject(projectPath)
+    this.syncConfig()
+    const effectiveScope: Scope = normalizeScope(scope ?? this.cfg<string>('scope'))
+    const explicit = this.explicitProject(projectPath, effectiveScope)
     const key = this.keyOf(effectiveScope, explicit)
 
     const hit = this.cacheHit(key)
@@ -569,10 +675,14 @@ export class State {
       projects,
     })
 
-    // 逐条配对（不用 batchGetPackageMeta —— 它会丢掉 project 字段且滤掉失败项导致下标错位）
-    const results = await Promise.all(installed.map((p) => this.resolveOne(p)))
+    // ⚠️ 并发上限：旧版这里 `Promise.all(installed.map(...))` 会一次打 220~300 个
+    // registry 请求（流式路径反而是 16 并发），既容易被限流也让首个结果等到最慢的那个。
+    // 现在复用同一个 RESOLVE_CONCURRENCY 池。
+    const generation = this.cacheGeneration
+    const results = await this.resolveAll(installed, generation)
 
     const packages = results.filter((m): m is ScopedPackageMeta => m !== null)
+    const failed = installed.length - packages.length
     const scannedAt = Date.now()
 
     const result: PackageListResult = {
@@ -584,10 +694,40 @@ export class State {
       cached: false,
       scannedAt,
     }
+    // 失败项不再是「静默消失」：把数量报出去，前端/工具能看出数据不完整
+    if (failed > 0) result.failedCount = failed
     if (projects !== undefined) result.projectCount = projects.length
 
-    this.cachePut(key, result, scannedAt)
+    // ⚠️ 失效竞态：扫描期间用户点了「刷新缓存」的话，这份数据已经是旧的，
+    // 不能再写回缓存并盖上新的 scannedAt（旧版就是这么把旧数据「洗白」的）。
+    if (generation === this.cacheGeneration) this.cachePut(key, result, scannedAt)
     return result
+  }
+
+  /**
+   * 用固定并发池解析全部包。
+   *
+   * @param generation 扫描开始时的缓存代数；与当前不一致时提前放弃剩余工作
+   */
+  private async resolveAll(
+    installed: Array<{ name: string; currentVersion: string; project?: string; projectPath?: string }>,
+    generation: number,
+  ): Promise<Array<ScopedPackageMeta | null>> {
+    const out: Array<ScopedPackageMeta | null> = new Array(installed.length).fill(null)
+    let cursor = 0
+    const worker = async (): Promise<void> => {
+      while (cursor < installed.length) {
+        if (generation !== this.cacheGeneration) return // 已失效，别再打网络
+        const index = cursor++
+        out[index] = await this.resolveOne(installed[index])
+      }
+    }
+    const workers = Array.from(
+      { length: Math.min(RESOLVE_CONCURRENCY, Math.max(1, installed.length)) },
+      () => worker(),
+    )
+    await Promise.all(workers)
+    return out
   }
 
   /** 单包详情(工具 #2 + 路由 GET /packages/:name 共用) */
@@ -595,7 +735,7 @@ export class State {
     const meta = await this.registryClient.getPackageMeta(name, currentVersion)
     if (!meta) return null
     let changelog: ChangelogSection[] = []
-    if (this.config.enableChangelog) {
+    if (this.cfg('enableChangelog')) {
       // 仓库地址从 meta 传入 —— 完整 packument 刻意不缓存，这里不能再拉一次
       try {
         changelog = await this.registryClient.getChangelog(name, meta.repository)
@@ -604,5 +744,64 @@ export class State {
       }
     }
     return { ...meta, changelog }
+  }
+
+  /**
+   * 推断某个包在本机的已装版本。
+   *
+   * 优先级：项目 `node_modules/<pkg>/package.json` → 项目 `package.json` 里的声明
+   * （剥掉 range 前缀）→ 全局 `node_modules` → 都没有则返回 `undefined`。
+   *
+   * 存在意义：`npm_get_package_info` 的 `currentVersion` 是可选的，旧版声称
+   * 「自动从 node_modules 推断」但实际 default 成 `'0.0.0'` —— 于是任何包都
+   * 显示成「过期」，用户会被误导。
+   */
+  async inferInstalledVersion(name: string): Promise<string | undefined> {
+    const clean = String(name ?? '').trim()
+    if (clean === '') return undefined
+
+    // 1) 本项目 node_modules 里的真实版本
+    try {
+      const installed = join(this.cwd, 'node_modules', clean, 'package.json')
+      if (existsSync(installed)) {
+        const pkg = JSON.parse(readFileSync(installed, 'utf8')) as { version?: string }
+        if (typeof pkg.version === 'string' && pkg.version !== '') return pkg.version
+      }
+    } catch {
+      /* 读不到就继续往下试 */
+    }
+
+    // 2) 本项目 package.json 的声明（`^18.2.0` → `18.2.0`）
+    try {
+      const declared = join(this.cwd, 'package.json')
+      if (existsSync(declared)) {
+        const pkg = JSON.parse(readFileSync(declared, 'utf8')) as Record<string, any>
+        for (const sec of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+          const v = pkg?.[sec]?.[clean]
+          if (typeof v === 'string' && v.trim() !== '') {
+            const parsed = parseVersion(v)
+            if (parsed !== null) return parsed.join('.')
+            return undefined // workspace:* / file: 这类不可比，不假装知道版本
+          }
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+
+    // 3) 全局 node_modules
+    try {
+      for (const candidate of globalNodeModulesCandidates()) {
+        const installed = join(candidate, clean, 'package.json')
+        if (existsSync(installed)) {
+          const pkg = JSON.parse(readFileSync(installed, 'utf8')) as { version?: string }
+          if (typeof pkg.version === 'string' && pkg.version !== '') return pkg.version
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+
+    return undefined
   }
 }

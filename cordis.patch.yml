@@ -1,0 +1,22 @@
+# cordis.patch.yml — 把 npm-manager 挂进 DSH 的 cordis 配置树
+#
+# 由 package.json 的 dsh.bundle.patch 指向，随 bundle 一起加载。
+# 前提：本包名必须出现在 profile 的 `dsh.profile.bundles` 列表里，
+#       否则这个文件根本不会被 apply（详见 DEPLOY.md）。
+#
+# ⚠️ 必须写成 `- insert:`，不能写成顶层 `- id:`。
+#    applyEntryPatches() 对非 insert 补丁要求 id 命中**已存在**的条目；
+#    未命中时只打印一条 warn 然后丢弃 —— 不会创建条目：
+#      dsh: [.../cordis.patch.yml] patch: entry "npm-manager" not found
+#
+# ⚠️ name 是**包名**。写 `link:` / `file:` / `./src/index.ts` 都是错的：
+#    那些是 pnpm 的依赖协议（属于 profile 的 dependencies），不是 cordis 的 name。
+
+- insert:
+    - id: npm-manager
+      name: dsh-plugin-npm-manager
+      config:
+        scope: project
+        registryCacheTtlMs: 300000
+        enableChangelog: true
+        npmCommandTimeoutMs: 60000

@@ -81,6 +81,7 @@ var zh = {
   badgeMinor: '次版本',
   badgePatch: '补丁',
   badgeDowngrade: '降级',
+  badgeUnknown: '不可比',
   unknown: '—',
   dev: 'dev',
   missing: '目录不存在',
@@ -155,6 +156,7 @@ var en = {
   badgeMinor: 'minor',
   badgePatch: 'patch',
   badgeDowngrade: 'downgrade',
+  badgeUnknown: 'not comparable',
   unknown: '—',
   dev: 'dev',
   missing: 'directory missing',
@@ -286,6 +288,9 @@ function badgeText(t, updateType) {
   if (updateType === 'minor') return t('badgeMinor')
   if (updateType === 'patch') return t('badgePatch')
   if (updateType === 'downgrade') return t('badgeDowngrade')
+  // 不可比（workspace:* / * / file: / link: 这类非版本协议）——
+  // 旧版会把它们硬判成 major，显示成「全是大版本升级」的假警报
+  if (updateType === 'unknown') return t('badgeUnknown')
   return ''
 }
 
@@ -408,9 +413,14 @@ function NpmManagerSection(props) {
   var setShowCfg = showCfgState[1]
 
   // 只存被改过的字段（保存时作为 patch 提交）
-  var draftState = react.useState({})
-  var draft = draftState[0]
-  var setDraft = draftState[1]
+  //
+  // ⚠️ 变量名必须与「自定义路径」那个 draft 区分开：旧版这里也叫 draftState/draft/setDraft，
+  // 与上面第 379 行那份（string）**同名 var 重复声明**，后者覆盖前者 →
+  // 「自定义路径」的输入框拿到的是 `{}`，点应用就 `draft.trim is not a function`。
+  // 构建脚本和 tsc 都查不出（客户端是纯 JS），只有真交互才炸。
+  var cfgDraftState = react.useState({})
+  var cfgDraft = cfgDraftState[0]
+  var setCfgDraft = cfgDraftState[1]
 
   var saveState = react.useState({ status: 'idle', error: null })
   var save = saveState[0]
@@ -480,7 +490,7 @@ function NpmManagerSection(props) {
   var saveConfig = react.useCallback(function () {
     var patch = {}
     var n = 0
-    for (var k in draft) { if (Object.prototype.hasOwnProperty.call(draft, k)) { patch[k] = draft[k]; n++ } }
+    for (var k in cfgDraft) { if (Object.prototype.hasOwnProperty.call(cfgDraft, k)) { patch[k] = cfgDraft[k]; n++ } }
     if (n === 0) { setSave({ status: 'idle', error: null }); return }
     setSave({ status: 'saving', error: null })
     fetch(API + '/settings', {
@@ -496,7 +506,7 @@ function NpmManagerSection(props) {
         setCfgMeta(function (prev) {
           return { loaded: true, current: res.body.current || prev.current, fields: prev.fields, writable: prev.writable }
         })
-        setDraft({})
+        setCfgDraft({})
         setSave({ status: 'saved', error: null })
         // 配置变更已在服务端作废缓存 → 本地也清掉并重新加载
         cacheRef.current = {}
@@ -640,7 +650,12 @@ function NpmManagerSection(props) {
             if (chunk.done) {
               var tail = buffer.trim()
               if (tail && tail.indexOf('data:') === 0) {
-                try { applyEvent(JSON.parse(tail.slice(5).trim())) } catch (e) { /* ignore */ }
+                // ⚠️ try 只包 JSON.parse：applyEvent 对 error 帧会 throw，
+                // 旧版把它一起包进 try → error 帧被当成「坏帧」静默吞掉，
+                // 界面永远停在 streaming、刷新按钮的 busy 收不回。
+                var tailEvent = null
+                try { tailEvent = JSON.parse(tail.slice(5).trim()) } catch (e) { /* 坏帧，跳过 */ }
+                if (tailEvent !== null) applyEvent(tailEvent)
               }
               return
             }
@@ -650,7 +665,9 @@ function NpmManagerSection(props) {
               var frame = buffer.slice(0, idx).trim()
               buffer = buffer.slice(idx + 2)
               if (!frame || frame.indexOf('data:') !== 0) continue
-              try { applyEvent(JSON.parse(frame.slice(5).trim())) } catch (e) { /* 跳过坏帧 */ }
+              var parsed = null
+              try { parsed = JSON.parse(frame.slice(5).trim()) } catch (e) { /* 坏帧，跳过 */ }
+              if (parsed !== null) applyEvent(parsed)
             }
             return pump()
           })
@@ -851,11 +868,11 @@ function NpmManagerSection(props) {
   var cfgSection = null
   if (cfgMeta.loaded && cfgMeta.fields.length > 0) {
     var cfgValueOf = function (key) {
-      if (Object.prototype.hasOwnProperty.call(draft, key)) return draft[key]
+      if (Object.prototype.hasOwnProperty.call(cfgDraft, key)) return cfgDraft[key]
       return cfgMeta.current ? cfgMeta.current[key] : undefined
     }
     var setField = function (key, value) {
-      setDraft(function (prev) {
+      setCfgDraft(function (prev) {
         var next = {}
         for (var k in prev) if (Object.prototype.hasOwnProperty.call(prev, k)) next[k] = prev[k]
         next[key] = value
@@ -863,7 +880,7 @@ function NpmManagerSection(props) {
       })
       setSave({ status: 'idle', error: null })
     }
-    var dirty = Object.keys(draft).length > 0
+    var dirty = Object.keys(cfgDraft).length > 0
 
     var items = cfgMeta.fields.map(function (f) {
       var v = cfgValueOf(f.key)
@@ -929,7 +946,7 @@ function NpmManagerSection(props) {
         key: 'reset',
         className: 'npmgr-btn',
         disabled: !dirty || save.status === 'saving',
-        onClick: function () { setDraft({}); setSave({ status: 'idle', error: null }) },
+        onClick: function () { setCfgDraft({}); setSave({ status: 'idle', error: null }) },
       }, t('cfgReset')),
       save.status === 'saved' ? react.createElement('span', { key: 'ok', className: 'npmgr-cfg-msg ok' }, '✓ ' + t('cfgSaved')) : null,
       save.status === 'error' ? react.createElement('span', { key: 'err', className: 'npmgr-cfg-msg err' }, save.error) : null,

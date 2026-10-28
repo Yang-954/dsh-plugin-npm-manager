@@ -1,0 +1,19 @@
+# npm 发布时排除的测试临时产物
+#
+# `src/.patched/` 与 `*.patched.ts` 是 scripts/patch-src.mjs 每次跑测试时生成的
+# 临时副本（把 .ts 复制到临时目录并改写 import）。它们**不是源码**，
+# 打进 tarball 只会让人误以为项目里有两套代码。
+#
+# 注：npm 的 `files` 字段是白名单，但仍会被 .npmignore 进一步过滤。
+src/.patched/
+*.patched.ts
+*.patched.d.ts
+*.patched.js
+
+# 本地验证产物
+_diag/*.log
+_diag/*.png
+_diag/*.txt
+_diag/*.html
+_diag/*.json
+_diag/*.yml

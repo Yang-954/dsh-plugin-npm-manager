@@ -18,7 +18,7 @@
  */
 
 import type { State } from '../services/state.js'
-import { SETTINGS_FIELDS } from '../config.js'
+import { SETTINGS_FIELDS, redactConfigForClient } from '../config.js'
 
 interface WebRes {
   statusCode: number
@@ -33,6 +33,10 @@ interface WebRes {
 interface WebReq {
   method: string
   url: string
+  /** 真实 Node IncomingMessage 才有；用于读 body 与监听断连 */
+  headers?: Record<string, string | string[] | undefined>
+  on?(event: string, listener: () => void): void
+  once?(event: string, listener: () => void): void
 }
 
 type Handler = (req: WebReq, res: WebRes) => Promise<void>
@@ -40,11 +44,52 @@ type Handler = (req: WebReq, res: WebRes) => Promise<void>
 function sendJson(res: WebRes, status: number, payload: unknown): void {
   res.statusCode = status
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-store')
   res.end(JSON.stringify(payload))
 }
 
 function sendError(res: WebRes, e: any): void {
   sendJson(res, 500, { error: (e && e.message) ? e.message : String(e) })
+}
+
+/**
+ * 写接口的同源校验（CSRF 防护）。
+ *
+ * `dsh-host-webserver` 的 README 明确写着「**不提供** server-wide 认证或 origin 策略，
+ * 由 route owner 自己负责」。我们的写接口（POST /settings、/refresh）因此必须自检：
+ * 浏览器跨站请求会带 `Origin`/`Sec-Fetch-Site`，非 same-origin 一律拒绝。
+ * 非浏览器客户端（curl / 测试）没有这两个头，放行 —— 它们本就不是 CSRF 的攻击面。
+ */
+function isSameOrigin(req: WebReq): boolean {
+  const headers = req.headers ?? {}
+  const pick = (name: string): string | undefined => {
+    const v = headers[name] ?? headers[name.toLowerCase()]
+    return Array.isArray(v) ? v[0] : v
+  }
+  const site = pick('sec-fetch-site')
+  if (typeof site === 'string' && site !== '' && site !== 'same-origin' && site !== 'none') return false
+
+  const origin = pick('origin')
+  if (typeof origin === 'string' && origin !== '' && origin !== 'null') {
+    const host = pick('host')
+    if (typeof host === 'string' && host !== '') {
+      try {
+        if (new URL(origin).host !== host) return false
+      } catch {
+        return false
+      }
+    }
+  }
+  return true
+}
+
+/** 写接口必须是 JSON —— 跨站的 `text/plain` 表单提交因此被挡在门外 */
+function isJsonContentType(req: WebReq): boolean {
+  const headers = req.headers ?? {}
+  const raw = headers['content-type'] ?? headers['Content-Type']
+  const ct = Array.isArray(raw) ? raw[0] : raw
+  if (typeof ct !== 'string' || ct === '') return false
+  return ct.split(';')[0].trim().toLowerCase() === 'application/json'
 }
 
 /** 从请求 URL 取查询参数 */
@@ -56,11 +101,20 @@ function queryOf(req: WebReq): URLSearchParams {
  * 读请求体并解析 JSON。
  *
  * 真实宿主里 `req` 是 Node 的 `IncomingMessage`（可异步迭代）。
- * 单测的 fake req 不是流，所以额外支持 `req.body` 已预解析的形态。
+ * 单测的 fake req 不是流，所以额外支持 `req.body` 已预解析的形态 ——
+ * ⚠️ 但预解析分支**也要受同一个体积上限约束**，否则它可以绕过 64KB 限制。
  */
 async function readJsonBody(req: any, limitBytes = 64 * 1024): Promise<any> {
   if (req && typeof req.body === 'object' && req.body !== null && typeof req.body[Symbol.asyncIterator] !== 'function') {
-    return req.body // 预解析（测试 / 某些框架）
+    // 预解析形态（测试 / 某些框架）：先序列化量一下体积，再放行
+    let size: number
+    try {
+      size = Buffer.byteLength(JSON.stringify(req.body), 'utf8')
+    } catch {
+      throw new Error('请求体不可序列化')
+    }
+    if (size > limitBytes) throw new Error(`请求体过大（> ${limitBytes} 字节）`)
+    return req.body
   }
   if (!req || typeof req[Symbol.asyncIterator] !== 'function') return {}
   const chunks: Buffer[] = []
@@ -86,7 +140,7 @@ async function readJsonBody(req: any, limitBytes = 64 * 1024): Promise<any> {
  *
  * 没有 `write()` 的响应对象（例如单测里的 fake res）退化为一次性输出，行为等价。
  */
-async function streamPackagesTo(res: WebRes, state: State, scope?: string, project?: string): Promise<void> {
+async function streamPackagesTo(req: WebReq, res: WebRes, state: State, scope?: string, project?: string): Promise<void> {
   const canStream = typeof res.write === 'function'
 
   res.statusCode = 200
@@ -96,21 +150,46 @@ async function streamPackagesTo(res: WebRes, state: State, scope?: string, proje
   res.setHeader('X-Accel-Buffering', 'no') // 反向代理不要缓冲
   if (typeof res.flushHeaders === 'function') res.flushHeaders()
 
+  /**
+   * 客户端断连信号。
+   *
+   * 浏览器关标签/切页时 `req` 会 emit 'close'。不监听它的话，16 个 worker
+   * 会把 220+ 个 registry 请求全部跑完 —— 白烧几十秒和几百次网络请求。
+   */
+  let aborted = false
+  const onClose = () => { aborted = true }
+  try {
+    req.once?.('close', onClose)
+    req.on?.('aborted', onClose)
+  } catch {
+    /* 老 req 没有事件接口时退化为不取消 */
+  }
+
   let buffered = ''
   const emit = (payload: unknown) => {
+    if (aborted) return
     const frame = 'data: ' + JSON.stringify(payload) + '\n\n'
-    if (canStream) res.write!(frame)
-    else buffered += frame
+    if (canStream) {
+      try { res.write!(frame) } catch { aborted = true }
+    } else buffered += frame
   }
 
   try {
     for await (const event of state.streamPackages(scope, project)) {
+      if (aborted) break
       emit(event)
     }
   } catch (e: any) {
     emit({ type: 'error', error: (e && e.message) ? e.message : String(e) })
+  } finally {
+    try {
+      req.once?.('close', onClose)
+    } catch { /* ignore */ }
+    // 真实 IncomingMessage 用 removeListener；没有就跳过
+    try { (req as any).removeListener?.('close', onClose); (req as any).removeListener?.('aborted', onClose) } catch { /* ignore */ }
   }
-  res.end(canStream ? undefined : buffered)
+  if (!aborted) res.end(canStream ? undefined : buffered)
+  else res.end()
 }
 
 export function registerWebRoutes(ctx: any, state: State): () => void {
@@ -143,7 +222,7 @@ export function registerWebRoutes(ctx: any, state: State): () => void {
           const scope = q.get('scope') ?? undefined
           const project = q.get('project') ?? undefined
           if (q.get('stream') === '1') {
-            await streamPackagesTo(res, state, scope, project)
+            await streamPackagesTo(req, res, state, scope, project)
             return
           }
           const data = await state.listPackages(scope, project)
@@ -208,9 +287,13 @@ export function registerWebRoutes(ctx: any, state: State): () => void {
       path: '/plugins/npm-manager/refresh',
       handler: (async (req: WebReq, res: WebRes) => {
         if (req.method !== 'POST') {
-          res.statusCode = 405
-          res.setHeader('Content-Type', 'application/json; charset=utf-8')
-          res.end('{"error":"method not allowed"}')
+          sendJson(res, 405, { error: 'method not allowed' })
+          return
+        }
+        // 与 /settings 同一套同源校验：清缓存虽是低危写操作，
+        // 但被跨站反复触发会让用户每次都白等几十秒重扫。
+        if (!isSameOrigin(req)) {
+          sendJson(res, 403, { error: '拒绝跨站请求（Origin / Sec-Fetch-Site 校验未通过）' })
           return
         }
         state.invalidate()
@@ -226,6 +309,15 @@ export function registerWebRoutes(ctx: any, state: State): () => void {
       handler: (async (req: WebReq, res: WebRes) => {
         // ── POST：写入配置 ──
         if (req.method === 'POST') {
+          // 写接口三道门：同源 / 必须是 JSON / 体积上限
+          if (!isSameOrigin(req)) {
+            sendJson(res, 403, { ok: false, error: '拒绝跨站写入（Origin / Sec-Fetch-Site 校验未通过）' })
+            return
+          }
+          if (!isJsonContentType(req)) {
+            sendJson(res, 415, { ok: false, error: '写接口只接受 Content-Type: application/json' })
+            return
+          }
           try {
             const body = await readJsonBody(req as any)
             const patch = (body && typeof body.patch === 'object' && body.patch !== null) ? body.patch : body
@@ -238,17 +330,20 @@ export function registerWebRoutes(ctx: any, state: State): () => void {
               sendJson(res, 400, result)
               return
             }
-            // 写入成功后 watch 已触发 → state.config 是最新值
-            sendJson(res, 200, { ok: true, current: state.config })
+            // ⚠️ 只回投影后的字段 —— 绝不 dump state.config（含 githubToken）
+            sendJson(res, 200, { ok: true, current: redactConfigForClient(state.config) })
           } catch (e: any) {
-            sendJson(res, 400, { ok: false, error: (e && e.message) ? e.message : String(e) })
+            const msg = (e && e.message) ? e.message : String(e)
+            const status = /过大/.test(msg) ? 413 : 400
+            sendJson(res, status, { ok: false, error: msg })
           }
           return
         }
 
         // ── GET：读配置 + 字段描述 + 诊断 ──
         sendJson(res, 200, {
-          current: state.config,
+          // ⚠️ 只下发白名单字段；凭据（githubToken）永不出现在响应里
+          current: redactConfigForClient(state.config),
           namespace: 'npm-manager',
           currentProject: state.cwd,
           // 字段描述由服务端下发 —— 前端按它渲染表单，两边不会漂移

@@ -21,7 +21,7 @@ const PKG_ITEM = {
     isOutdated: { type: 'boolean', required: true },
     updateType: {
       type: 'string',
-      enum: ['major', 'minor', 'patch', 'same', 'downgrade'],
+      enum: ['major', 'minor', 'patch', 'same', 'downgrade', 'unknown'],
     },
     description: { type: 'string' },
     homepage: { type: 'string' },

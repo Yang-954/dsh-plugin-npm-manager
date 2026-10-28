@@ -24,7 +24,14 @@ process.env.DSH_HOME = TEST_DSH_HOME
 const ROOT = path.resolve(import.meta.dirname, '..')
 
 // 真 dsh-tools(与 patched 源里被改写后加载的是同一份)
+//
+// ⚠️ 宿主包缺失时要**优雅跳过**，而不是 `import(null)` 崩掉整条测试链
+//    （旧版写死 profiles/web，本机该目录已空 → npm test 跑到这里必崩）。
 const dtUrl = PKG_URLS['@deepseek-ai/dsh-tools']
+if (dtUrl === null) {
+  console.log('跳过：未找到 @deepseek-ai/dsh-tools（peerDependency，宿主未安装或 profile 不匹配）')
+  process.exit(0)
+}
 const dshTools = await import(dtUrl)
 const { validateJsonSchemaValue } = dshTools
 
@@ -91,7 +98,7 @@ const sampleByName = {
     cached: true,
     scannedAt: 1789812261546,
   },
-  npm_get_package_info: { name: 'x', latestVersion: '1.0.0', currentVersion: '1.0.0', description: '', isOutdated: false, updateType: 'same', changelog: [] },
+  npm_get_package_info: { found: true, name: 'x', latestVersion: '1.0.0', currentVersion: '1.0.0', description: '', isOutdated: false, updateType: 'same', changelog: [] },
   npm_preview_upgrade: { packages: [], totalWarnings: 0, dryRun: true },
   npm_apply_upgrade: { success: false, executed: false, dryRun: true, packages: [], packageJsonChanged: false, beforeHash: null, afterHash: null, message: 'dry-run 模式' },
 }

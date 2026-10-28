@@ -13,7 +13,7 @@ export interface PackageMeta {
     homepage?: string;
     repository?: string;
     isOutdated: boolean;
-    updateType: 'major' | 'minor' | 'patch' | 'same' | 'downgrade';
+    updateType: 'major' | 'minor' | 'patch' | 'same' | 'downgrade' | 'unknown';
 }
 export interface ChangelogSection {
     version: string;
@@ -49,7 +49,26 @@ export interface SlimPackageMeta {
     homepage?: string;
     repository?: string;
 }
-export type UpdateType = 'major' | 'minor' | 'patch' | 'same' | 'downgrade';
+/**
+ * 解析一个版本字符串为 `[major, minor, patch]`。
+ *
+ * ⚠️ 必须**同时**处理三类输入，否则判定会静默错：
+ *   - semver range 前缀：`^18.2.0` / `~2.1.0` / `>=1.2.3` / `1.2.x`
+ *   - 非版本协议：`workspace:*` / `*` / `latest` / `file:...` / `link:...` / `npm:foo@1.2.3`
+ *   - 预发布尾巴：`2.0.0-beta.1`
+ *
+ * 非版本输入返回 `null`，调用方据此给「不可比」而不是硬判成 0.0.0
+ * （旧实现把 `workspace:*` 当 0.0.0，于是每个 monorepo 包都被判成 major）。
+ */
+export declare function parseVersion(raw: string): [number, number, number] | null;
+export type UpdateType = 'major' | 'minor' | 'patch' | 'same' | 'downgrade' | 'unknown';
+/**
+ * 判定升级类型。
+ *
+ * ⚠️ 旧实现只剥 `^~` 给了 `cmpVersion`，却在下面重新 `split('.')` 原始字符串，
+ * 于是 `'^18'` → `NaN` → `0` → 所有 caret 依赖的 minor/patch 升级都被判成 major。
+ * 现在两处共用 {@link parseVersion}，并且不可比时返回 `'unknown'` 而不是瞎猜。
+ */
 export declare function detectUpdateType(current: string, latest: string): UpdateType;
 export declare class RegistryClient {
     private base;

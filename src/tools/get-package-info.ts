@@ -10,13 +10,18 @@ export function registerGetPackageInfoTool(ctx: any, state: any): () => void {
     description: '查询单个 npm 包的详细信息:当前版本、最新版本、是否过期、主页、GitHub 仓库、可选 changelog。只读。',
     parameters: {
       name: { type: 'string', required: true, description: '包名,如 "typescript"' },
-      currentVersion: { type: 'string', default: '0.0.0', description: '当前已装版本(自动从 node_modules 推断)' },
+      currentVersion: {
+        type: 'string',
+        description: '当前已装版本；省略时自动从本机 node_modules/package.json 推断（推断不到才按 latest 比较）',
+      },
     },
     output: {
       schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
+          /** 包是否查到；false 时其余字段可省略 —— 0.2.1 的输出 schema 校验不接受 null */
+          found: { type: 'boolean', required: true },
           name: { type: 'string' },
           latestVersion: { type: 'string' },
           currentVersion: { type: 'string' },
@@ -26,7 +31,7 @@ export function registerGetPackageInfoTool(ctx: any, state: any): () => void {
           isOutdated: { type: 'boolean' },
           updateType: {
             type: 'string',
-            enum: ['major', 'minor', 'patch', 'same', 'downgrade'],
+            enum: ['major', 'minor', 'patch', 'same', 'downgrade', 'unknown'],
           },
           changelog: {
             type: 'array',
@@ -49,7 +54,19 @@ export function registerGetPackageInfoTool(ctx: any, state: any): () => void {
       render: (_args: any, value: any) => [{ type: 'text', text: renderDetail(value) }],
     },
     async execute(args: any, _exec: any) {
-      return await state.getPackageDetail(args.name, args.currentVersion)
+      // ⚠️ 0.2.1 的 ToolRuntime 会对输出做 schema 校验（`createSuccessResult`），
+      // 返回 null 直接抛 `ToolOutputError`。所以查不到时返回结构化 `found:false`，
+      // 而不是把 null 甩给宿主。
+      //
+      // 另外：没传 currentVersion 时**真的去推断**（旧版声明「自动从 node_modules 推断」
+      // 但实际 default 成 '0.0.0'，于是所有包都显示过期）。
+      const version = typeof args.currentVersion === 'string' && args.currentVersion.trim() !== ''
+        ? args.currentVersion.trim()
+        : await state.inferInstalledVersion(args.name)
+
+      const detail = await state.getPackageDetail(args.name, version ?? '0.0.0')
+      if (!detail) return { found: false, name: String(args.name) }
+      return { found: true, ...detail }
     },
   }) as any)
 }
@@ -63,6 +80,7 @@ const NOTES_MAX_CHARS = 900
  * 这里只保留判断"要不要升级"需要的信息。
  */
 function renderDetail(v: any): string {
+  if (v.found === false) return `未找到包 ${v.name}（npm registry 上没有这个包，或名字拼错了）`
   const lines: string[] = []
   const flag = v.isOutdated ? `可升级(${v.updateType})` : '已是最新'
   lines.push(`${v.name}  ${v.currentVersion} → ${v.latestVersion}  [${flag}]`)

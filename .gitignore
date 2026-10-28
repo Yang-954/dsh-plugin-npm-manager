@@ -23,8 +23,15 @@ PKG_INVENTORY.md
 *.bak-*
 settings.yaml.bak-*
 
-# 任何 dsh 配置覆盖文件（验证实例用，不入库）
-*.patch.yml
+# 验证实例用的 dsh 配置覆盖文件（不入库）
+#
+# ⚠️ 不能写 `*.patch.yml`：那会把 **cordis.patch.yml 也一起忽略** ——
+#    它是 package.json#dsh.bundle.patch 指向的**随包发布文件**，
+#    缺了它插件根本挂不进 cordis 配置树（本机曾经"有文件、仓库没有"，
+#    换机器 clone 直接缺）。这里只排掉验证用 overlay。
+_diag/*.patch.yml
+verify-instance.patch.yml
+cordis.overlay.yml
 
 # _diag 目录：验证脚本进库；所有运行时产物（截图/日志/HTML/txt/cookie/扫描输出）一律不进
 _diag/*.log

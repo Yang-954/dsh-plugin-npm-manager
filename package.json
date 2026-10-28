@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-npm-manager",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "type": "module",
   "description": "DSH plugin: list local/global npm packages in Settings → Plugins with version, description, outdated status, and upgrade actions.",
   "main": "./lib/index.js",
@@ -26,20 +26,24 @@
       "platform": "web"
     },
     "engines": {
-      "dsh": ">=0.1.5-rc.2"
+      "dsh": ">=0.2.1-rc.3"
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-host-webserver": ">=0.1.5-rc.1",
-    "@deepseek-ai/dsh-settings": ">=0.1.5-rc.1",
-    "@deepseek-ai/dsh-tools": ">=0.1.5-rc.2",
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/dsh-host-webserver": ">=0.2.1-rc.3",
+    "@deepseek-ai/dsh-settings": ">=0.2.1-rc.3",
+    "@deepseek-ai/dsh-tools": ">=0.2.1-rc.3",
+    "@deepseek-ai/schemastery": "^3.18.5"
   },
   "files": [
     "lib",
     "client",
     "src",
+    "!src/.patched",
+    "!src/**/*.patched.ts",
+    "!src/**/*.patched.d.ts",
+    "!src/**/*.patched.js",
     "scripts",
     "tests",
     "cordis.patch.yml",
@@ -50,7 +54,7 @@
   "scripts": {
     "build": "tsc",
     "build:client": "node scripts/build-client.mjs",
-    "test": "node scripts/build-client.mjs && node tests/tool-schema-verify.mjs && node tests/routes-verify.mjs && node tests/client-verify.mjs && node scripts/dev-conformance-check.mjs"
+    "test": "node scripts/build-client.mjs && node tests/tool-schema-verify.mjs && node tests/routes-verify.mjs && node tests/client-verify.mjs && node scripts/dev-conformance-check.mjs && node tests/host-contract-021.mjs"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

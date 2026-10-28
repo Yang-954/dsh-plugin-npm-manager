@@ -5,13 +5,19 @@
  * + read-back package.json sha256 对比
  * + dryRun 默认 true(必须显式 dryRun:false 才执行)
  * stderr 经过 sanitize(不泄露 npm token / 凭据)
+ *
+ * ## 0.2.1 适配
+ * - npm 调用改走 `services/npm-cli.ts`：Windows 用 `npm.cmd` + shell（裸 `spawn('npm')`
+ *   在 Windows 必 ENOENT，实测两个升级工具 100% 不可用）
+ * - `-g` 与包名**分开**传（旧版把 `-g` 塞进 packages 再拼 `@latest` → `-g@latest`）
+ * - 包名过白名单（开了 shell 就必须校验，两者是成对的）
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { runNpm, assertSafePackageSpec } from '../services/npm-cli.js'
 
 function hashPkg(cwd: string): string | null {
   const p = join(cwd, 'package.json')
@@ -32,23 +38,6 @@ function sanitizeNpmStderr(stderr: string, maxLen: number = 200): string {
   return cleaned.slice(0, maxLen) + (stderr.length > maxLen ? '...(truncated)' : '')
 }
 
-function runNpmInstall(packages: string[], cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<{ code: number; stderr: string }> {
-  return new Promise((resolve) => {
-    const args = ['install', '--json', ...packages.map(p => `${p}@latest`)]
-    let child: ReturnType<typeof spawn>
-    try {
-      child = spawn('npm', args, { cwd, timeout: timeoutMs, signal })
-    } catch (e: any) {
-      resolve({ code: -1, stderr: (e && e.message) ? e.message : String(e) })
-      return
-    }
-    let stderr = ''
-    child.stderr?.on('data', (d: any) => { stderr += d.toString('utf8') })
-    child.on('close', code => resolve({ code: code ?? -1, stderr }))
-    child.on('error', e => resolve({ code: -1, stderr: (e && e.message) ? e.message : String(e) }))
-  })
-}
-
 export function registerApplyUpgradeTool(ctx: any, state: any): () => void {
   return ctx.tools.register(defineTool({
     name: 'npm_apply_upgrade',
@@ -57,7 +46,8 @@ export function registerApplyUpgradeTool(ctx: any, state: any): () => void {
       packages: {
         type: 'array',
         items: { type: 'string' },
-        description: '要升级的包名数组',
+        required: true,
+        description: '要升级的包名数组（至少一个）',
       },
       confirm: {
         type: 'boolean',
@@ -109,38 +99,58 @@ export function registerApplyUpgradeTool(ctx: any, state: any): () => void {
       if (args.confirm !== true) {
         throw new Error('confirm must be true (dry-run + confirm 强制)')
       }
+      const rawPackages: unknown = args.packages
+      if (!Array.isArray(rawPackages) || rawPackages.length === 0) {
+        throw new Error('packages 必须是非空数组')
+      }
+      // 安全约束 1.5: 包名白名单（开了 shell 就必须校验，两者成对）
+      const packages = rawPackages.map((p: unknown) => assertSafePackageSpec(String(p)))
+      const isGlobal = args.scope === 'global'
+
       // 安全约束 2: dryRun 默认 true, 不显式 false 不执行
       if (args.dryRun !== false) {
         return {
           success: false,
           executed: false,
           dryRun: true,
-          packages: (args.packages as string[]).map(n => ({ name: n, from: '?', to: '(not executed, dry-run mode)' })),
+          packages: packages.map((n: string) => ({ name: n, from: '?', to: '(not executed, dry-run mode)' })),
           packageJsonChanged: false,
           beforeHash: hashPkg(state.cwd),
           afterHash: hashPkg(state.cwd),
           message: 'dry-run 模式,未执行任何操作。传 dryRun:false 才会真升级',
         }
       }
-      // 安全约束 3: read-back package.json sha256
+
+      // 安全约束 3: read-back package.json sha256（仅 project 范围有意义；
+      // global 装到 npm 前缀目录，不会动本项目的 package.json）
       const beforeHash = hashPkg(state.cwd)
-      const target = args.scope === 'global' ? ['-g', ...(args.packages as string[])] : (args.packages as string[])
-      const result = await runNpmInstall(target, state.cwd, state.config.npmCommandTimeoutMs, exec.signal)
+      const result = await runNpm(
+        ['install', '--json', ...packages.map((n: string) => `${n}@latest`)],
+        {
+          cwd: state.cwd,
+          timeoutMs: state.cfg ? state.cfg('npmCommandTimeoutMs') : state.config?.npmCommandTimeoutMs ?? 60_000,
+          signal: exec?.signal,
+          // ⚠️ flags 与包名分开：旧版把 '-g' 拼进包名列表得到 '-g@latest'
+          flags: isGlobal ? ['--global'] : [],
+        },
+      )
       const afterHash = hashPkg(state.cwd)
-      const packageJsonChanged = beforeHash !== null && afterHash !== null && beforeHash !== afterHash
+      const packageJsonChanged = !isGlobal && beforeHash !== null && afterHash !== null && beforeHash !== afterHash
 
       const ok = result.code === 0
       return {
         success: ok,
         executed: true,
         dryRun: false,
-        packages: (args.packages as string[]).map((n: string) => ({ name: n, from: '?', to: '?' })),
+        packages: packages.map((n: string) => ({ name: n, from: '?', to: '?' })),
         packageJsonChanged,
         beforeHash,
         afterHash,
         message: ok
           ? `升级完成 (exitCode=${result.code})`
-          : `升级失败 exitCode=${result.code}: ${sanitizeNpmStderr(result.stderr)}`,
+          : result.killed
+            ? `升级超时/被中止（${state.cfg ? state.cfg('npmCommandTimeoutMs') : 60000}ms）`
+            : `升级失败 exitCode=${result.code}: ${sanitizeNpmStderr(result.stderr)}`,
       }
     },
   }) as any)
